@@ -88,7 +88,79 @@ describe('AdminApiService', () => {
         { status: 400, statusText: 'Bad Request' },
       );
     const result = await create;
-    expect(result).toMatchObject({ status: 400, problems: ['limit must be at least 1'] });
+    expect(result).toMatchObject({ status: 400, code: 'policy_invalid', message: 'policy is invalid', problems: ['limit must be at least 1'] });
+  });
+
+  it('uses group and global-rules routes, methods, and bodies', async () => {
+    await loginAsAdmin();
+    const endpoint = {
+      id: 'ep-1', method: 'GET', path: '/api/products', displayName: 'Products',
+      repeatable: true, exempt: false, scopeRules: [],
+    };
+    const group = {
+      id: 'group-1', name: 'Products', enabled: true, endpoints: [endpoint],
+      onRedisError: 'FAIL_OPEN', version: 2, createdAt: 'now', updatedAt: 'now', updatedBy: 'admin',
+    };
+
+    const list = firstValueFrom(api.listGroups());
+    const listRequest = http.expectOne(`${BASE}/groups`);
+    expect(listRequest.request.method).toBe('GET');
+    listRequest.flush([group]);
+    expect(await list).toEqual([group]);
+
+    const get = firstValueFrom(api.getGroup('group /1'));
+    const getRequest = http.expectOne(`${BASE}/groups/group%20%2F1`);
+    expect(getRequest.request.method).toBe('GET');
+    getRequest.flush(group);
+    expect(await get).toEqual(group);
+
+    const edit = { id: group.id, name: group.name, enabled: true, endpoints: [endpoint], version: 1 };
+    const create = firstValueFrom(api.createGroup(edit));
+    const createRequest = http.expectOne(`${BASE}/groups`);
+    expect(createRequest.request.method).toBe('POST');
+    expect(createRequest.request.body).toEqual(edit);
+    createRequest.flush(group);
+    expect(await create).toEqual(group);
+
+    const update = firstValueFrom(api.updateGroup(group.id, { ...edit, version: 2 }));
+    const updateRequest = http.expectOne(`${BASE}/groups/group-1`);
+    expect(updateRequest.request.method).toBe('PUT');
+    expect(updateRequest.request.body.version).toBe(2);
+    updateRequest.flush(group);
+    expect(await update).toEqual(group);
+
+    const deleteEndpoint = firstValueFrom(api.deleteEndpoint(group.id, 'ep/1'));
+    const endpointRequest = http.expectOne(`${BASE}/groups/group-1/endpoints/ep%2F1`);
+    expect(endpointRequest.request.method).toBe('DELETE');
+    endpointRequest.flush(group);
+    expect(await deleteEndpoint).toEqual(group);
+
+    const repair = firstValueFrom(api.repairGroup(group.id));
+    const repairRequest = http.expectOne(`${BASE}/groups/group-1/repair`);
+    expect(repairRequest.request.method).toBe('POST');
+    repairRequest.flush({ groupId: group.id, written: 1, deleted: 0, at: 'now' });
+    expect(await repair).toMatchObject({ written: 1, deleted: 0 });
+
+    const deleteGroup = firstValueFrom(api.deleteGroup(group.id));
+    const deleteRequest = http.expectOne(`${BASE}/groups/group-1`);
+    expect(deleteRequest.request.method).toBe('DELETE');
+    deleteRequest.flush(null);
+    expect(await deleteGroup).toEqual({ deleted: true });
+
+    const rules = { rules: [], onRedisError: 'FAIL_CLOSED', version: 3, createdAt: 'now', updatedAt: 'now', updatedBy: 'admin' };
+    const getRules = firstValueFrom(api.globalRules());
+    const rulesGetRequest = http.expectOne(`${BASE}/global-rules`);
+    expect(rulesGetRequest.request.method).toBe('GET');
+    rulesGetRequest.flush(rules);
+    expect(await getRules).toEqual(rules);
+
+    const rulesEdit = { rules: [], onRedisError: 'FAIL_CLOSED' as const, version: 3 };
+    const saveRules = firstValueFrom(api.updateGlobalRules(rulesEdit));
+    const rulesPutRequest = http.expectOne(`${BASE}/global-rules`);
+    expect(rulesPutRequest.request.method).toBe('PUT');
+    expect(rulesPutRequest.request.body).toEqual(rulesEdit);
+    rulesPutRequest.flush(rules);
+    expect(await saveRules).toEqual(rules);
   });
 
   it('maps a 204 delete to deleted:true and logout drops the session', async () => {

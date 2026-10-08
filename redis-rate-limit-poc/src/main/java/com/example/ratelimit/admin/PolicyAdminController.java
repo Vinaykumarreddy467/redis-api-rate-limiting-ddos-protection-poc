@@ -1,17 +1,27 @@
 package com.example.ratelimit.admin;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
+import com.example.ratelimit.config.RateLimitProperties.FailureMode;
+import com.example.ratelimit.policy.Algorithm;
+import com.example.ratelimit.policy.EndpointRule;
 import com.example.ratelimit.policy.ExemptionDocument;
+import com.example.ratelimit.policy.GlobalScopeRules;
 import com.example.ratelimit.policy.ManagedPolicyStore;
 import com.example.ratelimit.policy.ManagedPolicyStore.PolicyNotFoundException;
 import com.example.ratelimit.policy.ManagedPolicyStore.PolicyStoreException;
 import com.example.ratelimit.policy.ManagedPolicyStore.PolicyStoreUnavailableException;
 import com.example.ratelimit.policy.PolicyConflictException;
 import com.example.ratelimit.policy.PolicyDocument;
+import com.example.ratelimit.policy.PolicyGroup;
 import com.example.ratelimit.policy.PolicyValidationException;
 import com.example.ratelimit.policy.PolicySeeder;
+import com.example.ratelimit.policy.ProjectionService;
+import com.example.ratelimit.policy.Scope;
+import com.example.ratelimit.policy.ScopeRule;
 import com.example.ratelimit.admin.AdminDtos.EnabledRequest;
 import com.example.ratelimit.admin.AdminDtos.ErrorResponse;
 import com.example.ratelimit.admin.AdminDtos.PolicyRequest;
@@ -52,17 +62,32 @@ public class PolicyAdminController {
     private final ManagedPolicyStore store;
     private final PolicySeeder seeder;
     private final com.example.ratelimit.policy.ExemptionStore exemptions;
+    private final ProjectionService projectionService;
+    private final com.example.ratelimit.policy.PolicyGroupValidator validator;
 
     public PolicyAdminController(ManagedPolicyStore store, PolicySeeder seeder,
-            com.example.ratelimit.policy.ExemptionStore exemptions) {
+            com.example.ratelimit.policy.ExemptionStore exemptions, ProjectionService projectionService,
+            com.example.ratelimit.policy.PolicyGroupValidator validator) {
         this.store = store;
         this.seeder = seeder;
         this.exemptions = exemptions;
+        this.projectionService = projectionService;
+        this.validator = validator;
     }
 
     @GetMapping("/policies")
     public List<PolicyResponse> list() {
-        return store.findAll().stream().map(PolicyResponse::from).toList();
+        var byId = new java.util.TreeMap<String, PolicyResponse>();
+        for (var policy : store.findAll()) byId.put(policy.id(), PolicyResponse.from(policy));
+        var groups = store.findAllGroups();
+        for (var group : groups) {
+            for (var policy : projectionService.projectGroup(group)) {
+                byId.put(policy.id(), PolicyResponse.from(policy));
+            }
+        }
+        store.findGlobalRules().ifPresent(rules -> projectionService.projectGlobalRules(rules)
+                .forEach(policy -> byId.put(policy.id(), PolicyResponse.from(policy))));
+        return List.copyOf(byId.values());
     }
 
     /**
@@ -156,21 +181,178 @@ public class PolicyAdminController {
 
     @GetMapping("/policies/{id}")
     public PolicyResponse get(@PathVariable String id) {
+        var groupOpt = store.findGroup(id);
+        if (groupOpt.isPresent()) {
+            var group = groupOpt.get();
+            if (group.endpoints().size() == 1 && group.endpoints().get(0).scopeRules().size() == 1) {
+                var endpoint = group.endpoints().get(0);
+                var rule = endpoint.scopeRules().get(0);
+                var doc = projectionService.projectGroup(group).get(0);
+                return PolicyResponse.from(doc);
+            }
+            throw new PolicyValidationException(List.of(
+                    "group '" + id + "' has multiple endpoints/rules; use /groups/" + id + " instead"));
+        }
+        var target = findProjectionTarget(id);
+        if (target != null) {
+            return PolicyResponse.from(projectionService.projectGroup(target.group()).stream()
+                    .filter(policy -> policy.id().equals(id)).findFirst()
+                    .orElseThrow(() -> new PolicyNotFoundException(id)));
+        }
+        if (findGlobalProjectionScope(id) != null) {
+            return PolicyResponse.from(projectionService.projectGlobalRules(
+                    store.findGlobalRules().orElseThrow(() -> new PolicyNotFoundException(id))).stream()
+                    .filter(policy -> policy.id().equals(id)).findFirst()
+                    .orElseThrow(() -> new PolicyNotFoundException(id)));
+        }
         return PolicyResponse.from(store.find(id).orElseThrow(() -> new PolicyNotFoundException(id)));
     }
 
     @PostMapping("/policies")
     public ResponseEntity<PolicyResponse> create(@RequestBody PolicyRequest request, Authentication auth) {
-        PolicyDocument document = toDocument(request, null, actor(auth));
-        PolicyDocument saved = store.save(document, null, actor(auth));
+        long expectedEpoch = store.getEpoch();
+        var groupOpt = store.findGroup(request.id() != null ? request.id() : UUID.randomUUID().toString());
+        if (groupOpt.isPresent()) {
+            throw new PolicyValidationException(List.of("group with id '" + request.id() + "' already exists"));
+        }
+        var scope = request.scope() != null ? request.scope() : Scope.ENDPOINT;
+        if (scope == Scope.GLOBAL || scope == Scope.APPLICATION) {
+            var rule = new ScopeRule(scope, request.algorithm(), request.window(), request.limit(),
+                    request.capacity(), request.refillInterval(), request.cost(), request.drainRate(),
+                    request.queueCapacity(), request.maxConcurrent(), request.leaseDuration(),
+                    request.onRedisError());
+            var globalRules = store.findGlobalRules().orElse(null);
+            if (globalRules != null && globalRules.rules().stream().anyMatch(r -> r.scope() == scope)) {
+                throw new PolicyValidationException(List.of("a global rule already exists for " + scope));
+            }
+            var updatedGlobal = globalRules != null ? new GlobalScopeRules(
+                    new ArrayList<>(globalRules.rules()) {{
+                        add(rule);
+                    }},
+                    globalRules.onRedisError(), globalRules.version() + 1,
+                    globalRules.createdAt(), Instant.now(), actor(auth), List.of())
+                    : new GlobalScopeRules(List.of(rule), request.onRedisError(), 1, Instant.now(), Instant.now(), actor(auth), List.of());
+            var groups = store.findAllGroups();
+            validator.validateGlobalRules(updatedGlobal, groups);
+            var projections = projectionService.projectGlobalRules(updatedGlobal);
+            store.saveGlobalRules(updatedGlobal, globalRules, actor(auth), projections, expectedEpoch);
+            var proj = projections.stream().filter(p -> p.scope() == scope).findFirst().orElse(projections.get(0));
+            return ResponseEntity.status(HttpStatus.CREATED)
+                    .eTag(etag(updatedGlobal.version()))
+                    .body(PolicyResponse.from(proj));
+        }
+        var groupId = request.id() != null ? request.id() : UUID.randomUUID().toString();
+        var endpointId = UUID.randomUUID().toString();
+        var rule = new ScopeRule(scope, request.algorithm(), request.window(), request.limit(),
+                request.capacity(), request.refillInterval(), request.cost(), request.drainRate(),
+                request.queueCapacity(), request.maxConcurrent(), request.leaseDuration(),
+                request.onRedisError());
+        var endpoint = new EndpointRule(endpointId, request.method(), request.path(),
+                request.name() != null ? request.name() : request.path(), true, false, List.of(rule));
+        var group = new PolicyGroup(groupId, request.name() != null ? request.name() : groupId, true,
+                List.of(endpoint), request.onRedisError(), 1, Instant.now(), Instant.now(), actor(auth), List.of());
+        var globalRules = store.findGlobalRules().orElse(new GlobalScopeRules(List.of(), FailureMode.FAIL_OPEN, 0, Instant.now(), Instant.now(), "system", List.of()));
+        validator.validateGroup(group, globalRules);
+        var projections = projectionService.projectGroup(group);
+        var saved = store.saveGroup(group, null, actor(auth), projections, expectedEpoch);
         return ResponseEntity.status(HttpStatus.CREATED)
                 .eTag(etag(saved.version()))
-                .body(PolicyResponse.from(saved));
+                .body(PolicyResponse.from(projections.get(0)));
     }
 
     @PutMapping("/policies/{id}")
     public ResponseEntity<PolicyResponse> update(@PathVariable String id, @RequestBody PolicyRequest request,
             Authentication auth) {
+        long expectedEpoch = store.getEpoch();
+        var groupOpt = store.findGroup(id);
+        if (groupOpt.isPresent()) {
+            var group = groupOpt.get();
+            if (group.endpoints().size() == 1 && group.endpoints().get(0).scopeRules().size() == 1) {
+                var endpoint = group.endpoints().get(0);
+                var rule = endpoint.scopeRules().get(0);
+                var updatedRule = new ScopeRule(rule.scope(), request.algorithm() != null ? request.algorithm() : rule.algorithm(),
+                        request.window() != null ? request.window() : rule.window(),
+                        request.limit() != null ? request.limit() : rule.limit(),
+                        request.capacity() != null ? request.capacity() : rule.capacity(),
+                        request.refillInterval() != null ? request.refillInterval() : rule.refillInterval(),
+                        request.cost() != null ? request.cost() : rule.cost(),
+                        request.drainRate() != null ? request.drainRate() : rule.drainRate(),
+                        request.queueCapacity() != null ? request.queueCapacity() : rule.queueCapacity(),
+                        request.maxConcurrent() != null ? request.maxConcurrent() : rule.maxConcurrent(),
+                        request.leaseDuration() != null ? request.leaseDuration() : rule.leaseDuration(),
+                        request.onRedisError() != null ? request.onRedisError() : rule.onRedisError());
+                var updatedEndpoint = new EndpointRule(endpoint.id(),
+                        request.method() != null ? request.method() : endpoint.method(),
+                        request.path() != null ? request.path() : endpoint.path(),
+                        request.name() != null ? request.name() : endpoint.displayName(),
+                        endpoint.repeatable(), endpoint.exempt(), List.of(updatedRule));
+                var updatedGroup = new PolicyGroup(group.id(),
+                        request.name() != null ? request.name() : group.name(),
+                        request.enabled() != null ? request.enabled() : group.enabled(),
+                        List.of(updatedEndpoint),
+                        request.onRedisError() != null ? request.onRedisError() : group.onRedisError(),
+                        request.version() != null ? request.version() + 1 : group.version() + 1, group.createdAt(), Instant.now(), actor(auth), group.projectionIds());
+                var projections = projectionService.projectGroup(updatedGroup);
+                var globalRules = store.findGlobalRules().orElse(new GlobalScopeRules(List.of(), FailureMode.FAIL_OPEN, 0, Instant.now(), Instant.now(), "system", List.of()));
+                validator.validateGroup(updatedGroup, globalRules);
+                var saved = store.saveGroup(updatedGroup, group, actor(auth), projections, expectedEpoch);
+                return ResponseEntity.ok().eTag(etag(saved.version())).body(PolicyResponse.from(projections.get(0)));
+            }
+            throw new PolicyValidationException(List.of(
+                    "group '" + id + "' has multiple endpoints/rules; use /groups/" + id + " instead"));
+        }
+        var projectionTarget = findProjectionTarget(id);
+        if (projectionTarget != null) {
+            if (request.scope() != null && request.scope() != projectionTarget.scope()) {
+                throw new PolicyValidationException(List.of("scope cannot be changed through a projected policy; edit the group instead"));
+            }
+            var group = projectionTarget.group();
+            if (request.version() == null || request.version() != group.version()) {
+                throw new PolicyConflictException(group.version(), request.version() == null ? -1 : request.version());
+            }
+            var endpoints = new ArrayList<EndpointRule>();
+            for (var endpoint : group.endpoints()) {
+                if (!endpoint.id().equals(projectionTarget.endpoint().id())) {
+                    endpoints.add(endpoint);
+                    continue;
+                }
+                var rules = endpoint.scopeRules().stream().map(rule -> rule.scope() == projectionTarget.scope()
+                        ? mergeRule(rule, request) : rule).toList();
+                endpoints.add(new EndpointRule(endpoint.id(),
+                        request.method() != null ? request.method() : endpoint.method(),
+                        request.path() != null ? request.path() : endpoint.path(),
+                        request.name() != null ? request.name() : endpoint.displayName(),
+                        endpoint.repeatable(), endpoint.exempt(), rules));
+            }
+            var updatedGroup = new PolicyGroup(group.id(), group.name(),
+                    request.enabled() != null ? request.enabled() : group.enabled(), endpoints,
+                    request.onRedisError() != null ? request.onRedisError() : group.onRedisError(),
+                    group.version() + 1, group.createdAt(), Instant.now(), actor(auth), group.projectionIds());
+            var globalRules = store.findGlobalRules().orElse(null);
+            validator.validateGroup(updatedGroup, globalRules);
+            var projections = projectionService.projectGroup(updatedGroup);
+            var saved = store.saveGroup(updatedGroup, group, actor(auth), projections, expectedEpoch);
+            var updatedProjection = projections.stream().filter(p -> p.id().equals(id)).findFirst()
+                    .orElseThrow(() -> new PolicyNotFoundException(id));
+            return ResponseEntity.ok().eTag(etag(saved.version())).body(PolicyResponse.from(updatedProjection));
+        }
+        Scope globalScope = findGlobalProjectionScope(id);
+        if (globalScope != null) {
+            var current = store.findGlobalRules().orElseThrow(() -> new PolicyNotFoundException(id));
+            if (request.version() == null || request.version() != current.version()) {
+                throw new PolicyConflictException(current.version(), request.version() == null ? -1 : request.version());
+            }
+            var rules = current.rules().stream().map(rule -> rule.scope() == globalScope
+                    ? mergeRule(rule, request) : rule).toList();
+            var updated = new GlobalScopeRules(rules,
+                    request.onRedisError() != null ? request.onRedisError() : current.onRedisError(),
+                    current.version() + 1, current.createdAt(), Instant.now(), actor(auth), current.projectionIds());
+            validator.validateGlobalRules(updated, store.findAllGroups());
+            var docs = projectionService.projectGlobalRules(updated);
+            var saved = store.saveGlobalRules(updated, current, actor(auth), docs, expectedEpoch);
+            return ResponseEntity.ok().eTag(etag(saved.version())).body(PolicyResponse.from(docs.stream()
+                    .filter(p -> p.id().equals(id)).findFirst().orElseThrow(() -> new PolicyNotFoundException(id))));
+        }
         PolicyDocument existing = store.find(id).orElseThrow(() -> new PolicyNotFoundException(id));
         if (request.id() != null && !id.equals(request.id())) {
             throw new PolicyValidationException(List.of(
@@ -188,11 +370,56 @@ public class PolicyAdminController {
     @PatchMapping("/policies/{id}/enabled")
     public ResponseEntity<PolicyResponse> setEnabled(@PathVariable String id,
             @RequestBody EnabledRequest request, Authentication auth) {
+        long expectedEpoch = store.getEpoch();
+        var groupOpt = store.findGroup(id);
+        if (groupOpt.isPresent()) {
+            var group = groupOpt.get();
+            if (group.endpoints().size() == 1 && group.endpoints().get(0).scopeRules().size() == 1) {
+                var endpoint = group.endpoints().get(0);
+                var rule = endpoint.scopeRules().get(0);
+                var updatedGroup = new PolicyGroup(group.id(), group.name(),
+                        request.enabled() != null ? request.enabled() : group.enabled(),
+                        group.endpoints(), group.onRedisError(),
+                        request.version() != null ? request.version() + 1 : group.version() + 1,
+                        group.createdAt(), Instant.now(), actor(auth), group.projectionIds());
+                var projections = projectionService.projectGroup(updatedGroup);
+                var saved = store.saveGroup(updatedGroup, group, actor(auth), projections, expectedEpoch);
+                return ResponseEntity.ok().eTag(etag(saved.version())).body(PolicyResponse.from(projections.get(0)));
+            }
+            throw new PolicyValidationException(List.of(
+                    "group '" + id + "' has multiple endpoints/rules; use /groups/" + id + " instead"));
+        }
+        var projectionTarget = findProjectionTarget(id);
+        if (projectionTarget != null) {
+            var group = projectionTarget.group();
+            if (request.enabled() == null) {
+                throw new PolicyValidationException(List.of("enabled is required and must be true or false"));
+            }
+            if (request.version() == null || request.version() != group.version()) {
+                throw new PolicyConflictException(group.version(), request.version() == null ? -1 : request.version());
+            }
+            var updatedGroup = new PolicyGroup(group.id(), group.name(), request.enabled(), group.endpoints(),
+                    group.onRedisError(), group.version() + 1, group.createdAt(), Instant.now(), actor(auth),
+                    group.projectionIds());
+            var projections = projectionService.projectGroup(updatedGroup);
+            var saved = store.saveGroup(updatedGroup, group, actor(auth), projections, expectedEpoch);
+            var updatedProjection = projections.stream().filter(p -> p.id().equals(id)).findFirst()
+                    .orElseThrow(() -> new PolicyNotFoundException(id));
+            return ResponseEntity.ok().eTag(etag(saved.version())).body(PolicyResponse.from(updatedProjection));
+        }
+        if (findGlobalProjectionScope(id) != null) {
+            if (!Boolean.TRUE.equals(request.enabled())) {
+                throw new PolicyValidationException(List.of("global rules do not support per-rule enabled changes"));
+            }
+            var rules = store.findGlobalRules().orElseThrow(() -> new PolicyNotFoundException(id));
+            return ResponseEntity.ok().eTag(etag(rules.version())).body(PolicyResponse.from(
+                    projectionService.projectGlobalRules(rules).stream().filter(p -> p.id().equals(id))
+                            .findFirst().orElseThrow(() -> new PolicyNotFoundException(id))));
+        }
         PolicyDocument existing = store.find(id).orElseThrow(() -> new PolicyNotFoundException(id));
         if (request.enabled() == null) {
             throw new PolicyValidationException(List.of("enabled is required and must be true or false"));
         }
-        // Same convention as PUT: the client sends the version it read, the store moves it to base + 1.
         long nextVersion = request.version() != null ? request.version() + 1 : existing.version() + 1;
         PolicyDocument updated = PolicyDocument.builder(existing.id())
                 .name(existing.name())
@@ -215,9 +442,304 @@ public class PolicyAdminController {
 
     @DeleteMapping("/policies/{id}")
     public ResponseEntity<Void> delete(@PathVariable String id, Authentication auth) {
+        long expectedEpoch = store.getEpoch();
+        var groupOpt = store.findGroup(id);
+        if (groupOpt.isPresent()) {
+            var group = groupOpt.get();
+            if (group.endpoints().size() == 1 && group.endpoints().get(0).scopeRules().size() == 1) {
+                store.deleteGroup(id, actor(auth), expectedEpoch);
+                return ResponseEntity.noContent().build();
+            }
+            throw new PolicyValidationException(List.of(
+                    "group '" + id + "' has multiple endpoints/rules; use /groups/" + id + " instead"));
+        }
+        var projectionTarget = findProjectionTarget(id);
+        if (projectionTarget != null) {
+            var group = projectionTarget.group();
+            var endpoints = new ArrayList<EndpointRule>();
+            for (var endpoint : group.endpoints()) {
+                if (!endpoint.id().equals(projectionTarget.endpoint().id())) {
+                    endpoints.add(endpoint);
+                    continue;
+                }
+                endpoints.add(new EndpointRule(endpoint.id(), endpoint.method(), endpoint.path(),
+                        endpoint.displayName(), endpoint.repeatable(), endpoint.exempt(),
+                        endpoint.scopeRules().stream().filter(r -> r.scope() != projectionTarget.scope()).toList()));
+            }
+            var updatedGroup = new PolicyGroup(group.id(), group.name(), group.enabled(), endpoints,
+                    group.onRedisError(), group.version() + 1, group.createdAt(), Instant.now(), actor(auth),
+                    group.projectionIds());
+            var saved = store.saveGroup(updatedGroup, group, actor(auth), projectionService.projectGroup(updatedGroup),
+                    expectedEpoch);
+            return ResponseEntity.noContent().build();
+        }
+        Scope globalScope = findGlobalProjectionScope(id);
+        if (globalScope != null) {
+            var current = store.findGlobalRules().orElseThrow(() -> new PolicyNotFoundException(id));
+            var updated = new GlobalScopeRules(current.rules().stream().filter(r -> r.scope() != globalScope).toList(),
+                    current.onRedisError(), current.version() + 1, current.createdAt(), Instant.now(), actor(auth),
+                    current.projectionIds());
+            validator.validateGlobalRules(updated, store.findAllGroups());
+            store.saveGlobalRules(updated, current, actor(auth), projectionService.projectGlobalRules(updated),
+                    expectedEpoch);
+            return ResponseEntity.noContent().build();
+        }
         PolicyDocument existing = store.find(id).orElseThrow(() -> new PolicyNotFoundException(id));
         store.delete(id, actor(auth), existing.version());
         return ResponseEntity.noContent().build();
+    }
+
+    // --- group and global-rules endpoints ---
+
+    @GetMapping("/groups")
+    public List<GroupResponse> listGroups() {
+        return store.findAllGroups().stream().map(this::toGroupResponse).toList();
+    }
+
+    @GetMapping("/groups/{id}")
+    public GroupResponse getGroup(@PathVariable String id) {
+        var group = store.findGroup(id).orElseThrow(() -> new PolicyNotFoundException(id));
+        return toGroupResponse(group);
+    }
+
+    @PostMapping("/groups")
+    public ResponseEntity<GroupResponse> createGroup(@RequestBody GroupRequest request, Authentication auth) {
+        long expectedEpoch = store.getEpoch();
+        var groupId = request.id() != null ? request.id() : UUID.randomUUID().toString();
+        if (store.findGroup(groupId).isPresent()) {
+            throw new PolicyValidationException(List.of("group with id '" + groupId + "' already exists"));
+        }
+        var endpoints = new ArrayList<EndpointRule>();
+        for (var ep : request.endpoints()) {
+            var endpointId = ep.id() != null ? ep.id() : UUID.randomUUID().toString();
+            var rules = new ArrayList<ScopeRule>();
+            for (var rule : ep.scopeRules()) {
+                rules.add(new ScopeRule(Scope.valueOf(rule.scope().toUpperCase()), Algorithm.valueOf(rule.algorithm().toUpperCase()),
+                        rule.window() != null ? java.time.Duration.parse(rule.window()) : null, rule.limit(),
+                        rule.capacity(), rule.refillInterval() != null ? java.time.Duration.parse(rule.refillInterval()) : null,
+                        rule.cost(), rule.drainRate(),
+                        rule.queueCapacity(), rule.maxConcurrent(),
+                        rule.leaseDuration() != null ? java.time.Duration.parse(rule.leaseDuration()) : null,
+                        rule.onRedisError() != null ? FailureMode.valueOf(rule.onRedisError()) : null));
+            }
+            endpoints.add(new EndpointRule(endpointId, ep.method(), ep.path(), ep.displayName(),
+                    ep.repeatable(), ep.exempt(), rules));
+        }
+        var group = new PolicyGroup(groupId, request.name() != null ? request.name() : groupId,
+                request.enabled() != null ? request.enabled() : true, endpoints,
+                request.onRedisError(), 1, Instant.now(), Instant.now(), actor(auth), List.of());
+        var globalRules = store.findGlobalRules().orElse(new GlobalScopeRules(List.of(), FailureMode.FAIL_OPEN, 0, Instant.now(), Instant.now(), "system", List.of()));
+        validator.validateGroup(group, globalRules);
+        var projections = projectionService.projectGroup(group);
+        var saved = store.saveGroup(group, null, actor(auth), projections, expectedEpoch);
+        return ResponseEntity.status(HttpStatus.CREATED).eTag(etag(saved.version())).body(toGroupResponse(saved));
+    }
+
+    @PutMapping("/groups/{id}")
+    public ResponseEntity<GroupResponse> updateGroup(@PathVariable String id, @RequestBody GroupRequest request,
+            Authentication auth) {
+        long expectedEpoch = store.getEpoch();
+        var group = store.findGroup(id).orElseThrow(() -> new PolicyNotFoundException(id));
+        if (request.version() == null) {
+            throw new PolicyValidationException(List.of("version is required on update"));
+        }
+        var endpoints = new ArrayList<EndpointRule>();
+        for (var ep : request.endpoints()) {
+            var endpointId = ep.id() != null ? ep.id() : UUID.randomUUID().toString();
+            var rules = new ArrayList<ScopeRule>();
+            for (var rule : ep.scopeRules()) {
+                rules.add(new ScopeRule(Scope.valueOf(rule.scope().toUpperCase()), Algorithm.valueOf(rule.algorithm().toUpperCase()),
+                        rule.window() != null ? java.time.Duration.parse(rule.window()) : null, rule.limit(),
+                        rule.capacity(), rule.refillInterval() != null ? java.time.Duration.parse(rule.refillInterval()) : null,
+                        rule.cost(), rule.drainRate(),
+                        rule.queueCapacity(), rule.maxConcurrent(),
+                        rule.leaseDuration() != null ? java.time.Duration.parse(rule.leaseDuration()) : null,
+                        rule.onRedisError() != null ? FailureMode.valueOf(rule.onRedisError()) : null));
+            }
+            endpoints.add(new EndpointRule(endpointId, ep.method(), ep.path(), ep.displayName(),
+                    ep.repeatable(), ep.exempt(), rules));
+        }
+        var updated = new PolicyGroup(id, request.name() != null ? request.name() : group.name(),
+                request.enabled() != null ? request.enabled() : group.enabled(), endpoints,
+                request.onRedisError() != null ? request.onRedisError() : group.onRedisError(),
+                request.version() + 1, group.createdAt(), Instant.now(), actor(auth), group.projectionIds());
+        var globalRules = store.findGlobalRules().orElse(new GlobalScopeRules(List.of(), FailureMode.FAIL_OPEN, 0, Instant.now(), Instant.now(), "system", List.of()));
+        validator.validateGroup(updated, globalRules);
+        var projections = projectionService.projectGroup(updated);
+        var saved = store.saveGroup(updated, group, actor(auth), projections, expectedEpoch);
+        return ResponseEntity.ok().eTag(etag(saved.version())).body(toGroupResponse(saved));
+    }
+
+    @DeleteMapping("/groups/{id}")
+    public ResponseEntity<Void> deleteGroup(@PathVariable String id, Authentication auth) {
+        long expectedEpoch = store.getEpoch();
+        var group = store.findGroup(id).orElseThrow(() -> new PolicyNotFoundException(id));
+        store.deleteGroup(id, actor(auth), expectedEpoch);
+        return ResponseEntity.noContent().build();
+    }
+
+    @DeleteMapping("/groups/{groupId}/endpoints/{endpointId}")
+    public ResponseEntity<GroupResponse> deleteEndpoint(@PathVariable String groupId, @PathVariable String endpointId,
+            Authentication auth) {
+        long expectedEpoch = store.getEpoch();
+        var group = store.findGroup(groupId).orElseThrow(() -> new PolicyNotFoundException(groupId));
+        var endpoints = new ArrayList<EndpointRule>(group.endpoints().stream()
+                .filter(e -> !e.id().equals(endpointId))
+                .toList());
+        if (endpoints.size() == group.endpoints().size()) {
+            throw new PolicyNotFoundException(endpointId);
+        }
+        var updated = new PolicyGroup(group.id(), group.name(), group.enabled(), endpoints,
+                group.onRedisError(), group.version() + 1, group.createdAt(), Instant.now(),
+                actor(auth), group.projectionIds());
+        var globalRules = store.findGlobalRules().orElse(new GlobalScopeRules(List.of(), FailureMode.FAIL_OPEN, 0, Instant.now(), Instant.now(), "system", List.of()));
+        validator.validateGroup(updated, globalRules);
+        var projections = projectionService.projectGroup(updated);
+        var saved = store.saveGroup(updated, group, actor(auth), projections, expectedEpoch);
+        return ResponseEntity.ok().eTag(etag(saved.version())).body(toGroupResponse(saved));
+    }
+
+    @PostMapping("/groups/{id}/repair")
+    public ResponseEntity<RepairResponse> repairGroup(@PathVariable String id, Authentication auth) {
+        var counts = store.repairProjections(id, actor(auth));
+        return ResponseEntity.ok(new RepairResponse(id, counts.written(), counts.deleted(), Instant.now()));
+    }
+
+    @GetMapping("/global-rules")
+    public GlobalRulesResponse getGlobalRules() {
+        var rules = store.findGlobalRules().orElse(new GlobalScopeRules(List.of(), FailureMode.FAIL_OPEN, 0, Instant.now(), Instant.now(), "system", List.of()));
+        return new GlobalRulesResponse(rules.rules().stream().map(r -> new ScopeRuleDto(r.scope().name(),
+                r.algorithm().name(), r.window() != null ? r.window().toString() : null,
+                r.limit(), r.capacity(), r.refillInterval() != null ? r.refillInterval().toString() : null,
+                r.cost(), r.drainRate(), r.queueCapacity(), r.maxConcurrent(),
+                r.leaseDuration() != null ? r.leaseDuration().toString() : null,
+                r.onRedisError() != null ? r.onRedisError().name() : null)).toList(),
+                rules.onRedisError(), rules.version(),
+                rules.createdAt(), rules.updatedAt(), rules.updatedBy());
+    }
+
+    @PutMapping("/global-rules")
+    public ResponseEntity<GlobalRulesResponse> updateGlobalRules(@RequestBody GlobalRulesRequest request,
+            Authentication auth) {
+        long expectedEpoch = store.getEpoch();
+        var existing = store.findGlobalRules().orElse(null);
+        if (request.version() == null) {
+            throw new PolicyValidationException(List.of("version is required on update"));
+        }
+        var rules = new ArrayList<ScopeRule>();
+        for (var rule : request.rules()) {
+            rules.add(new ScopeRule(Scope.valueOf(rule.scope().toUpperCase()), Algorithm.valueOf(rule.algorithm().toUpperCase()),
+                    rule.window() != null ? java.time.Duration.parse(rule.window()) : null, rule.limit(),
+                    rule.capacity(), rule.refillInterval() != null ? java.time.Duration.parse(rule.refillInterval()) : null,
+                    rule.cost(), rule.drainRate(),
+                    rule.queueCapacity(), rule.maxConcurrent(),
+                    rule.leaseDuration() != null ? java.time.Duration.parse(rule.leaseDuration()) : null,
+                    rule.onRedisError() != null ? FailureMode.valueOf(rule.onRedisError()) : null));
+        }
+        var updated = existing != null ? new GlobalScopeRules(rules,
+                request.onRedisError() != null ? request.onRedisError() : existing.onRedisError(),
+                request.version() + 1, existing.createdAt(), Instant.now(), actor(auth), List.of())
+                : new GlobalScopeRules(rules,
+                request.onRedisError(), 1, Instant.now(), Instant.now(), actor(auth), List.of());
+        var groups = store.findAllGroups();
+        validator.validateGlobalRules(updated, groups);
+        var projections = projectionService.projectGlobalRules(updated);
+        var saved = store.saveGlobalRules(updated, existing, actor(auth), projections, expectedEpoch);
+        return ResponseEntity.ok().eTag(etag(saved.version()))
+                .body(new GlobalRulesResponse(saved.rules().stream().map(r -> new ScopeRuleDto(r.scope().name(),
+                        r.algorithm().name(), r.window() != null ? r.window().toString() : null,
+                        r.limit(), r.capacity(), r.refillInterval() != null ? r.refillInterval().toString() : null,
+                        r.cost(), r.drainRate(), r.queueCapacity(), r.maxConcurrent(),
+                        r.leaseDuration() != null ? r.leaseDuration().toString() : null,
+                        r.onRedisError() != null ? r.onRedisError().name() : null)).toList(),
+                        saved.onRedisError(), saved.version(),
+                        saved.createdAt(), saved.updatedAt(), saved.updatedBy()));
+    }
+
+    private GroupResponse toGroupResponse(PolicyGroup group) {
+        var endpoints = group.endpoints().stream().map(ep -> {
+            var rules = ep.scopeRules().stream().map(r -> new ScopeRuleDto(r.scope().name(),
+                    r.algorithm().name(), r.window() != null ? r.window().toString() : null,
+                    r.limit(), r.capacity(),
+                    r.refillInterval() != null ? r.refillInterval().toString() : null,
+                    r.cost(), r.drainRate(), r.queueCapacity(), r.maxConcurrent(),
+                    r.leaseDuration() != null ? r.leaseDuration().toString() : null,
+                    r.onRedisError() != null ? r.onRedisError().name() : null)).toList();
+            return new EndpointRuleDto(ep.id(), ep.method(), ep.path(), ep.displayName(),
+                    ep.repeatable(), ep.exempt(), rules);
+        }).toList();
+        return new GroupResponse(group.id(), group.name(), group.enabled(), endpoints,
+                group.onRedisError(), group.version(), group.createdAt(), group.updatedAt(),
+                group.updatedBy());
+    }
+
+    private ProjectionTarget findProjectionTarget(String projectionId) {
+        for (var group : store.findAllGroups()) {
+            for (var endpoint : group.endpoints()) {
+                for (var rule : endpoint.scopeRules()) {
+                    if (projectionService.projectionId(group.id(), endpoint.id(), rule.scope()).equals(projectionId)) {
+                        return new ProjectionTarget(group, endpoint, rule.scope());
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private Scope findGlobalProjectionScope(String projectionId) {
+        return store.findGlobalRules().stream().flatMap(rules -> rules.rules().stream())
+                .map(ScopeRule::scope)
+                .filter(scope -> projectionService.globalProjectionId(scope).equals(projectionId))
+                .findFirst().orElse(null);
+    }
+
+    private static ScopeRule mergeRule(ScopeRule rule, PolicyRequest request) {
+        return new ScopeRule(rule.scope(), pick(request.algorithm(), rule.algorithm()),
+                pick(request.window(), rule.window()), pick(request.limit(), rule.limit()),
+                pick(request.capacity(), rule.capacity()), pick(request.refillInterval(), rule.refillInterval()),
+                pick(request.cost(), rule.cost()), pick(request.drainRate(), rule.drainRate()),
+                pick(request.queueCapacity(), rule.queueCapacity()), pick(request.maxConcurrent(), rule.maxConcurrent()),
+                pick(request.leaseDuration(), rule.leaseDuration()), pick(request.onRedisError(), rule.onRedisError()));
+    }
+
+    private record ProjectionTarget(PolicyGroup group, EndpointRule endpoint, Scope scope) { }
+
+    public record GroupRequest(String id, String name, Boolean enabled, List<EndpointRequest> endpoints,
+            FailureMode onRedisError, Long version) {
+    }
+
+    public record EndpointRequest(String id, String method, String path, String displayName,
+            boolean repeatable, boolean exempt, List<ScopeRuleRequest> scopeRules) {
+    }
+
+    public record ScopeRuleRequest(String scope, String algorithm, String window, Integer limit,
+            Integer capacity, String refillInterval, Integer cost, Integer drainRate,
+            Integer queueCapacity, Integer maxConcurrent, String leaseDuration,
+            String onRedisError) {
+    }
+
+    public record GroupResponse(String id, String name, boolean enabled, List<EndpointRuleDto> endpoints,
+            FailureMode onRedisError, long version, Instant createdAt, Instant updatedAt, String updatedBy) {
+    }
+
+    public record EndpointRuleDto(String id, String method, String path, String displayName,
+            boolean repeatable, boolean exempt, List<ScopeRuleDto> scopeRules) {
+    }
+
+    public record ScopeRuleDto(String scope, String algorithm, String window, Integer limit,
+            Integer capacity, String refillInterval, Integer cost, Integer drainRate,
+            Integer queueCapacity, Integer maxConcurrent, String leaseDuration,
+            String onRedisError) {
+    }
+
+    public record GlobalRulesRequest(List<ScopeRuleRequest> rules, FailureMode onRedisError, Long version) {
+    }
+
+    public record GlobalRulesResponse(List<ScopeRuleDto> rules, FailureMode onRedisError, long version,
+            Instant createdAt, Instant updatedAt, String updatedBy) {
+    }
+
+    public record RepairResponse(String groupId, int written, int deleted, Instant at) {
     }
 
     @GetMapping("/audit")

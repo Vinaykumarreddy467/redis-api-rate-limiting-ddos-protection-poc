@@ -1,13 +1,65 @@
 <section aria-labelledby="policies-heading">
   <div class="page-head">
     <div>
-      <h2 id="policies-heading">Policies</h2>
+      <h2 id="policies-heading">Policy groups and legacy policies</h2>
       <p class="page-sub">
-        The authoritative list read from shared Redis. Saving applies to every instance immediately.
+        Manage grouped endpoints and shared scope rules. Legacy policy controls remain available during migration.
       </p>
     </div>
-    <button type="button" class="btn-primary" (click)="onCreate()">Create policy</button>
+    <button type="button" class="btn-primary" (click)="onCreateGroup()">Create policy group</button>
   </div>
+
+    <section class="panel" aria-label="Policy groups">
+    <div class="page-head"><div><h3>Policy groups</h3><p class="help">Groups and global scope rules are read from shared Redis.</p></div></div>
+    @if (store.groupsState().error; as groupsError) {
+      <p class="alert alert-bad" role="alert">Groups could not be loaded: {{ groupsError }}</p>
+      <button type="button" class="btn-secondary" (click)="store.loadGroups()">Retry groups</button>
+    } @else if (!store.groupsState().loaded) {
+      <p class="loading" role="status">Loading policy groups&#8230;</p>
+    } @else {
+      <div class="toolbar">
+        <label class="grow"><span class="visually-hidden">Filter groups</span>
+          <input type="search" name="group-filter" placeholder="Filter groups by id, name, or route"
+            [ngModel]="groupFilter()" (ngModelChange)="groupFilter.set($event)" />
+        </label>
+        <p class="count">{{ filteredGroups().length }} of {{ groups().length }} groups</p>
+      </div>
+      @if (filteredGroups().length === 0) { <p class="empty">No groups match. Create a group or clear the filter.</p> }
+      @else {
+        <table class="table">
+          <thead><tr><th scope="col">Group</th><th scope="col">Endpoints</th><th scope="col">State</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
+          <tbody>@for (group of filteredGroups(); track group.id) {
+            <tr>
+              <td data-label="Group"><strong>{{ group.name }}</strong><br /><code>{{ group.id }}</code></td>
+              <td data-label="Endpoints">{{ group.endpoints.length }}</td>
+              <td data-label="State"><span class="chip" [class.chip-on]="group.enabled" [class.chip-off]="!group.enabled">{{ group.enabled ? 'Enabled' : 'Disabled' }} · v{{ group.version }}</span></td>
+              <td class="row-actions">
+                <button type="button" class="btn-secondary" (click)="onEditGroup(group)">View / edit</button>
+                <button type="button" class="btn-secondary" (click)="onToggleGroup(group)" [disabled]="store.busy()">{{ group.enabled ? 'Disable' : 'Enable' }}</button>
+              </td>
+            </tr>
+          }</tbody>
+        </table>
+      }
+    }
+    @if (store.globalRulesState().error; as rulesError) {
+      <p class="alert alert-bad" role="alert">Global APPLICATION/GLOBAL rules could not be loaded: {{ rulesError }}</p>
+      <button type="button" class="btn-secondary" (click)="store.loadGlobalRules()">Retry global rules</button>
+    } @else if (!store.globalRulesState().loaded) {
+      <p class="loading" role="status">Loading global scope rules&#8230;</p>
+    } @else {
+      <p class="help">Global scopes: {{ store.globalRules()?.rules?.length ?? 0 }} configured.</p>
+      <button type="button" class="btn-secondary" (click)="onEditGlobalRules()">Edit global scope rules</button>
+    }
+  </section>
+
+  @if (store.actionError(); as actionError) { <p class="alert alert-bad" role="alert">{{ actionError }}</p> }
+  @if (store.actionInfo(); as actionInfo) { <p class="alert alert-ok" role="status">{{ actionInfo }}</p> }
+
+  <section class="panel" aria-label="Legacy policies">
+    <div class="page-head"><div><h3>Legacy policies</h3><p class="help">Retained during migration; these continue to apply alongside group rules.</p></div>
+      <button type="button" class="btn-secondary" (click)="onCreate()">Create legacy policy</button>
+    </div>
 
   @if (store.capabilitiesState().error; as capabilitiesError) {
     <p class="alert alert-bad" role="alert">
@@ -51,7 +103,7 @@
       </select>
     </label>
     <p class="count" role="status">
-      {{ filtered().length }} of {{ policies().length }} policies
+      {{ filtered().length }} of {{ policies().length }} legacy policies
     </p>
   </div>
 
@@ -65,7 +117,7 @@
     <p class="loading" role="status">Loading policies&#8230;</p>
   } @else if (policies().length === 0) {
     <p class="empty">
-      No policies are stored. Create one, or restart the API to seed the shipped defaults.
+      No legacy policies are stored. Group-based policies can still be managed above.
     </p>
   } @else if (filtered().length === 0) {
     <p class="empty">No policy matches this filter. Clear it to see all {{ policies().length }}.</p>
@@ -215,6 +267,14 @@
   }
 
   @if (editorOpen()) {
-    <app-policy-editor [policyId]="editingId()" (closed)="onEditorClosed()" />
+    <app-policy-editor [policyId]="editingId()" (closed)="onEditorClosed()" (exemptionSaved)="onExemptionSaved()" />
+  }
+  @if (groupEditorOpen()) {
+    @if (editingGroupId(); as groupId) {
+      @if (groupById(groupId); as group) { <app-policy-group-editor [group]="group" (closed)="groupEditorOpen.set(false)" /> }
+    } @else { <app-policy-group-editor (closed)="groupEditorOpen.set(false)" /> }
+  }
+  @if (globalRulesEditorOpen()) {
+    <app-policy-group-editor [globalRulesOnly]="true" (closed)="globalRulesEditorOpen.set(false)" />
   }
 </section>

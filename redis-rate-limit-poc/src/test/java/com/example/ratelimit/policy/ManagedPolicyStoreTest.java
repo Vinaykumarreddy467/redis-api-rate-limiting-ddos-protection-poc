@@ -2,9 +2,11 @@ package com.example.ratelimit.policy;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 
 import com.example.ratelimit.RedisTestSupport;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.example.ratelimit.config.RateLimitProperties.FailureMode;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -27,6 +29,7 @@ class ManagedPolicyStoreTest {
     private static LettuceConnectionFactory factory;
     private ManagedPolicyStore store;
     private StringRedisTemplate redis;
+    private final ProjectionService projections = new ProjectionService();
 
     @BeforeEach
     void setUp() {
@@ -230,6 +233,75 @@ class ManagedPolicyStoreTest {
         store.reset("admin");
         assertThat(store.findAll()).isEmpty();
         assertThat(store.isSeeded()).as("reset must allow an intentional reseed").isFalse();
+    }
+
+    @Test
+    void resetRemovesGroupsAndProjectionsAndAdvancesEpoch() {
+        var now = Instant.now();
+        var rule = new ScopeRule(Scope.ENDPOINT, Algorithm.FIXED_WINDOW, Duration.ofMinutes(1),
+                10, null, null, null, null, null, null, null, null);
+        var endpoint = new EndpointRule("ep-reset", "GET", "/api/reset", "Reset", true, false,
+                List.of(rule));
+        var group = new PolicyGroup("grp-reset", "Reset", true, List.of(endpoint),
+                FailureMode.FAIL_OPEN, 1, now, now, "test", List.of());
+        var docs = projections.projectGroup(group);
+        store.saveGroup(group, null, "test", docs, store.getEpoch());
+        long before = store.getEpoch();
+
+        store.reset("test");
+
+        assertThat(store.getEpoch()).isGreaterThan(before);
+        assertThat(store.findGroup(group.id())).isEmpty();
+        assertThat(store.findAll()).isEmpty();
+        assertThat(redis.opsForSet().members(ManagedPolicyStore.PROJECTIONS)).isEmpty();
+        assertThatThrownBy(() -> store.saveGroup(group, null, "test", docs, before))
+                .isInstanceOf(PolicyConflictException.class);
+        assertThat(store.findGroup(group.id())).isEmpty();
+    }
+
+    @Test
+    void deletingGroupRemovesPersistedProjectionIdsAndIndexEntries() {
+        var now = Instant.now();
+        var rule = new ScopeRule(Scope.ENDPOINT, Algorithm.FIXED_WINDOW, Duration.ofMinutes(1),
+                10, null, null, null, null, null, null, null, null);
+        var endpoint = new EndpointRule("ep-delete", "GET", "/api/delete", "Delete", true, false,
+                List.of(rule));
+        var group = new PolicyGroup("grp-delete", "Delete", true, List.of(endpoint),
+                FailureMode.FAIL_OPEN, 1, now, now, "test", List.of());
+        var saved = store.saveGroup(group, null, "test", projections.projectGroup(group), store.getEpoch());
+        assertThat(saved.projectionIds()).hasSize(1);
+
+        store.deleteGroup(group.id(), "test", store.getEpoch());
+
+        assertThat(store.findAll()).isEmpty();
+        assertThat(redis.opsForSet().members(ManagedPolicyStore.PROJECTIONS)).isEmpty();
+        assertThat(redis.opsForSet().members(ManagedPolicyStore.INDEX)).isEmpty();
+    }
+
+    @Test
+    void repairRemovesStaleRecordedGroupProjectionAndReturnsCounts() throws Exception {
+        var now = Instant.now();
+        var rule = new ScopeRule(Scope.ENDPOINT, Algorithm.FIXED_WINDOW, Duration.ofMinutes(1),
+                10, null, null, null, null, null, null, null, null);
+        var endpoint = new EndpointRule("ep-repair", "GET", "/api/repair", "Repair", true, false,
+                List.of(rule));
+        var group = new PolicyGroup("grp-repair", "Repair", true, List.of(endpoint),
+                FailureMode.FAIL_OPEN, 1, now, now, "test", List.of());
+        var projection = projections.projectGroup(group).get(0);
+        store.saveGroup(group, null, "test", List.of(projection), store.getEpoch());
+        String staleId = "p-" + "a".repeat(56);
+        redis.opsForHash().put(ManagedPolicyStore.NS + ":group:" + group.id(), "projectionIds",
+                new ObjectMapper().writeValueAsString(List.of(projection.id(), staleId)));
+        redis.opsForHash().put(ManagedPolicyStore.NS + ":doc:" + staleId, "doc", "{}");
+        redis.opsForSet().add(ManagedPolicyStore.PROJECTIONS, staleId);
+        redis.opsForSet().add(ManagedPolicyStore.INDEX, staleId);
+
+        var counts = store.repairProjections(group.id(), "test");
+
+        assertThat(counts.deleted()).isEqualTo(1);
+        assertThat(counts.written()).isZero();
+        assertThat(redis.opsForSet().isMember(ManagedPolicyStore.PROJECTIONS, staleId)).isFalse();
+        assertThat(redis.opsForSet().isMember(ManagedPolicyStore.INDEX, staleId)).isFalse();
     }
 
     @Test

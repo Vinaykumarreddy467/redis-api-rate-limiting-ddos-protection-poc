@@ -5,12 +5,14 @@ import { catchError, map, timeout } from 'rxjs/operators';
 
 import { API_CONFIG } from './api-config';
 import { DemoRoute } from './demo-catalog';
-import { RejectionHeaders } from './models';
+import { RejectionHeaders, ResponseEntry } from './models';
 
 export interface DemoRequestResult {
   status: number;
   headers: RejectionHeaders;
-  /** Only the API's own human-readable message is retained; raw bodies are discarded. */
+  /** Full response body for pretty-printing, null if not JSON or empty. */
+  body: unknown | null;
+  /** Extracted message field for quick display. */
   message: string | null;
   /** Set when the request never produced a response, e.g. offline or cancelled. */
   transportError: string | null;
@@ -57,6 +59,7 @@ export class DemoRequestService {
   }
 
   private fromResponse(status: number, headers: HttpHeaders, body: string | null): DemoRequestResult {
+    const parsedBody = this.parseBody(body);
     return {
       status,
       headers: {
@@ -65,7 +68,8 @@ export class DemoRequestService {
         remaining: headers.get('X-RateLimit-Remaining'),
         policy: headers.get('X-RateLimit-Policy'),
       },
-      message: this.extractMessage(body),
+      body: parsedBody,
+      message: this.extractMessage(parsedBody),
       transportError: null,
     };
   }
@@ -78,6 +82,7 @@ export class DemoRequestService {
     const status = error?.status ?? 0;
     const text = typeof error?.error === 'string' ? error.error : '';
     const headers = error?.headers;
+    const parsedBody = this.parseBody(text);
     return {
       status,
       headers: headers
@@ -88,19 +93,25 @@ export class DemoRequestService {
             policy: headers.get('X-RateLimit-Policy'),
           }
         : EMPTY_HEADERS,
-      message: this.extractMessage(text),
+      body: parsedBody,
+      message: this.extractMessage(parsedBody),
       transportError: status === 0 ? (error?.name ?? 'network-error') : null,
     };
   }
 
-  private extractMessage(text: string | null): string | null {
-    if (!text) return null;
+  private parseBody(text: string | null): unknown | null {
+    if (!text || !text.trim()) return null;
     try {
-      const parsed = JSON.parse(text) as { message?: unknown };
-      return typeof parsed.message === 'string' ? parsed.message : null;
+      return JSON.parse(text);
     } catch {
-      return null;
+      return text; // Return raw text if not JSON
     }
+  }
+
+  private extractMessage(body: unknown | null): string | null {
+    if (!body || typeof body !== 'object') return null;
+    const obj = body as { message?: unknown };
+    return typeof obj.message === 'string' ? obj.message : null;
   }
 
   private encodeBasic(credentials: Credentials): string {

@@ -25,7 +25,9 @@ Everything below was run and observed on this machine. Numbers are measured, not
 | 3 | The limit is **global**, not per instance | `08-two-instance-demo-results.png` — two JVMs on 18081/18082, **60** requests split across both, one shared key with `pttl 17760` |
 | 4 | Counting survives a Redis restart | `TTL` and counter expiry in `verify-all.ps1` |
 | 5 | The system degrades predictably when Redis dies | Per-policy fail-open / fail-closed below |
-| 6 | The whole thing is testable headlessly | 109 backend tests + 55 frontend tests, green |
+| 6 | The whole thing is testable headlessly | **153 backend tests + 84 frontend tests**, green |
+| 7 | Policy groups compose multiple scope rules per endpoint | Admin UI group editor + `PolicyGroupValidator` tests |
+| 8 | Request tester shows every response with pretty JSON | Request demo component — collapsible per-request entries |
 
 ---
 
@@ -89,6 +91,14 @@ principal), and **GLOBAL** / **APPLICATION** (one shared quota across all in-sco
 of IP or user). `GLOBAL` is the legacy name; `APPLICATION` is the same behavior with a clearer label.
 Existing `GLOBAL` policies keep working unchanged.
 
+**Policy groups** (Phase 4) let an admin compose multiple scope rules on a single endpoint. A group
+has an `enabled` flag, a list of endpoints (each with method, path, display name, `repeatable`,
+`exempt`), and each endpoint carries one or more `ScopeRule` (scope, algorithm, parameters). Groups
+are validated against global rules and other groups via `PolicyGroupValidator`; projections are
+materialized as individual `PolicyDocument` records in Redis so the enforcement path is unchanged.
+The admin UI provides a group editor with add/remove endpoint and scope-rule rows, and the request
+tester lets you select a group endpoint directly.
+
 **Exemptions** are separate rules, not zero-limit policies: the create-policy form has an
 "Exclude this API from rate limiting" checkbox that stores a distinct exemption for the selected
 method and path (own Redis namespace `ratelimit:exemption:v1`, managed under
@@ -110,6 +120,10 @@ dropdown shows one option per route with its policy count, and each policy's own
 parameters are listed separately because limits are not comparable across algorithms. Enabled
 policies whose path matches no handler are reported separately: a policy does not prove an API
 exists, and a mistyped path can never be offered as a live route.
+
+**Request tester per-response inspection.** After a run, every response appears as a collapsible
+entry with status badge, rate-limit headers, message, and pretty-printed JSON body. The runner is
+bounded, sequential, cancellable, and reports first-429 index, elapsed time, and status breakdown.
 
 ---
 
@@ -250,8 +264,8 @@ Everything below was executed against the code in this repository.
 ### Backend — `mvn -B clean verify`
 
 ```
-Tests run: 109, Failures: 0, Errors: 0, Skipped: 0
-BUILD SUCCESS in 47.7 s
+Tests run: 153, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS in ~60 s
 ```
 
 Testcontainers supplies a real Redis, so the fixed-window logic is tested against Redis rather than
@@ -260,16 +274,16 @@ a mock. Java 21.0.12.1, Maven 3.9.16.
 ### Frontend — `npm test`
 
 ```
-Test Suites: 9 passed, 9 total
-Tests:       55 passed, 55 total
-Time:        4.46 s
+Test Suites: 11 passed, 11 total
+Tests:       84 passed, 84 total
+Time:        ~8 s
 ```
 
 ### Frontend — `npm run build`
 
 ```
-Initial total: 244.44 kB │ Transfer: 66.15 kB
-Build at: 4.847 s (application bundle)
+Initial total: 452.52 kB │ Transfer: 111.38 kB
+Build at: ~12 s (application bundle)
 ```
 
 ### End-to-end gate — `verify-all.ps1 -SkipBuild -SkipUnitTests`

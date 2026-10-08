@@ -3,7 +3,7 @@ import { Observable, firstValueFrom } from 'rxjs';
 
 import { DemoRoute } from '../../core/demo-catalog';
 import { Credentials, DemoRequestResult, DemoRequestService } from '../../core/demo-request.service';
-import { DemoSummary } from '../../core/models';
+import { DemoSummary, ResponseEntry } from '../../core/models';
 
 /**
  * Bounded, sequential, cancellable demo execution.
@@ -38,6 +38,7 @@ export class DemoRunnerService {
       completed: false,
       cancelled: false,
       inconclusive: false,
+      responses: [],
       lastRejection: null,
       lastError: null,
     };
@@ -63,19 +64,24 @@ export class DemoRunnerService {
         this.sent.set(summary.totalSent);
         onProgress(summary.totalSent, requestedCount);
 
+        const entry: ResponseEntry = {
+          index,
+          status: result.status,
+          headers: result.headers,
+          body: result.body,
+          message: result.message,
+          transportError: result.transportError,
+        };
+        summary.responses.push(entry);
+
         if (result.status >= 200 && result.status < 300) {
           summary.success += 1;
         } else if (result.status === 429) {
           summary.rejected += 1;
           if (summary.first429Index === null) {
             summary.first429Index = index;
-            summary.lastRejection = {
-              index,
-              status: result.status,
-              headers: result.headers,
-              message: result.message,
-            };
           }
+          summary.lastRejection = entry;
         } else if (result.status === 404) {
           // A configured policy may name a path no handler serves. The filter already ran before
           // routing, so this response says nothing about the limit; keep going so a later 429 can
@@ -85,11 +91,7 @@ export class DemoRunnerService {
           // 401, 403, 503 or offline: the route is not behaving as this POC expects, so stop
           // rather than spending the remaining budget on a broken run.
           summary.error += 1;
-          summary.lastError = {
-            index,
-            status: result.status,
-            reason: result.transportError ?? `HTTP ${result.status}`,
-          };
+          summary.lastError = entry;
           break;
         }
       }

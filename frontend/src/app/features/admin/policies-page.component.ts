@@ -2,11 +2,12 @@ import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@a
 import { FormsModule } from '@angular/forms';
 
 import { AdminStore } from '../../core/admin-store.service';
-import { AdminPolicy, durationToSeconds } from '../../core/admin-models';
+import { AdminPolicy, PolicyGroup, durationToSeconds } from '../../core/admin-models';
 import { DemoRoute } from '../../core/demo-catalog';
 import { DemoSummary } from '../../core/models';
 import { DemoRunnerService } from '../request-demo/demo-runner.service';
 import { PolicyEditorComponent } from './policy-editor.component';
+import { PolicyGroupEditorComponent } from './policy-group-editor.component';
 
 const PROBE_MAX = 30;
 
@@ -19,7 +20,7 @@ const PROBE_MAX = 30;
 @Component({
   selector: 'app-policies-page',
   standalone: true,
-  imports: [FormsModule, PolicyEditorComponent],
+  imports: [FormsModule, PolicyEditorComponent, PolicyGroupEditorComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './policies-page.component.html',
 })
@@ -31,6 +32,9 @@ export class PoliciesPageComponent {
   protected readonly scopeFilter = signal('');
   protected readonly editorOpen = signal(false);
   protected readonly editingId = signal<string | null>(null);
+  protected readonly groupEditorOpen = signal(false);
+  protected readonly editingGroupId = signal<string | null>(null);
+  protected readonly globalRulesEditorOpen = signal(false);
   protected readonly confirmDeleteId = signal<string | null>(null);
 
   // Bounded probe state: sequential, user-triggered, capped, cancellable.
@@ -41,6 +45,14 @@ export class PoliciesPageComponent {
 
   protected readonly policies = this.store.policies;
   protected readonly capabilities = this.store.capabilities;
+  protected readonly groups = this.store.groups;
+  protected readonly groupFilter = signal('');
+  protected readonly filteredGroups = computed(() => {
+    const needle = this.groupFilter().trim().toLowerCase();
+    return this.groups().filter((group) => !needle ||
+      `${group.id} ${group.name} ${group.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`).join(' ')}`
+        .toLowerCase().includes(needle));
+  });
 
   protected readonly scopeOptions = computed(() => this.store.implementedScopes().map((s) => s.name));
 
@@ -72,6 +84,42 @@ export class PoliciesPageComponent {
     this.editorOpen.set(true);
   }
 
+  protected onCreateGroup(): void {
+    this.store.clearMessages();
+    this.editingGroupId.set(null);
+    this.groupEditorOpen.set(true);
+  }
+
+  protected onEditGroup(group: PolicyGroup): void {
+    this.store.clearMessages();
+    this.editingGroupId.set(group.id);
+    this.groupEditorOpen.set(true);
+  }
+
+  protected onEditGlobalRules(): void {
+    this.store.clearMessages();
+    this.globalRulesEditorOpen.set(true);
+  }
+
+  protected groupById(id: string): PolicyGroup | null {
+    return this.groups().find((group) => group.id === id) ?? null;
+  }
+
+  protected async onToggleGroup(group: PolicyGroup): Promise<void> {
+    this.store.busy.set(true);
+    try {
+      await this.store.saveGroup({
+        name: group.name,
+        enabled: !group.enabled,
+        endpoints: group.endpoints,
+        onRedisError: group.onRedisError,
+        version: group.version,
+      }, group.id);
+    } finally {
+      this.store.busy.set(false);
+    }
+  }
+
   protected onEdit(policy: AdminPolicy): void {
     this.store.clearMessages();
     this.editingId.set(policy.id);
@@ -79,6 +127,10 @@ export class PoliciesPageComponent {
   }
 
   protected onEditorClosed(): void {
+    this.editorOpen.set(false);
+  }
+
+  protected onExemptionSaved(): void {
     this.editorOpen.set(false);
   }
 

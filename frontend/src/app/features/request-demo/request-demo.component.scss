@@ -126,6 +126,18 @@ h2 {
   }
 }
 
+.response-entry {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  background: var(--surface-2);
+  margin: var(--space-3) 0;
+
+  summary { cursor: pointer; color: var(--text-dim); font-weight: 600; }
+  p { overflow-wrap: anywhere; }
+  pre { max-height: 24rem; overflow: auto; white-space: pre-wrap; }
+}
+
 .result.inconclusive {
   border-color: rgba(224, 163, 58, 0.5);
 }

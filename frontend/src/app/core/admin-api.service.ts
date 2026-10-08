@@ -11,7 +11,12 @@ import {
   DemoRouteCatalogResponse,
   ExemptionEdit,
   ExemptionRecord,
+  GlobalScopeRules,
+  GlobalScopeRulesEdit,
+  PolicyGroup,
+  PolicyGroupEdit,
   PolicyEdit,
+  ProjectionRepairResult,
 } from './admin-models';
 
 const REQUEST_TIMEOUT_MS = 8000;
@@ -123,6 +128,47 @@ export class AdminApiService {
 
   createExemption(edit: ExemptionEdit): Observable<AdminPolicy | AdminApiError> {
     return this.authed<AdminPolicy>('POST', '/exemptions', edit);
+  }
+
+  listGroups(): Observable<PolicyGroup[] | AdminApiError> {
+    return this.authed<PolicyGroup[]>('GET', '/groups');
+  }
+
+  getGroup(id: string): Observable<PolicyGroup | AdminApiError> {
+    return this.authed<PolicyGroup>('GET', `/groups/${encodeURIComponent(id)}`);
+  }
+
+  createGroup(edit: PolicyGroupEdit): Observable<PolicyGroup | AdminApiError> {
+    return this.authed<PolicyGroup>('POST', '/groups', edit);
+  }
+
+  updateGroup(id: string, edit: PolicyGroupEdit): Observable<PolicyGroup | AdminApiError> {
+    return this.authed<PolicyGroup>('PUT', `/groups/${encodeURIComponent(id)}`, edit);
+  }
+
+  deleteGroup(id: string): Observable<{ deleted: true } | AdminApiError> {
+    return this.authed<void>('DELETE', `/groups/${encodeURIComponent(id)}`).pipe(
+      map((result) => (isAdminError(result) ? result : { deleted: true as const })),
+    );
+  }
+
+  deleteEndpoint(groupId: string, endpointId: string): Observable<PolicyGroup | AdminApiError> {
+    return this.authed<PolicyGroup>(
+      'DELETE',
+      `/groups/${encodeURIComponent(groupId)}/endpoints/${encodeURIComponent(endpointId)}`,
+    );
+  }
+
+  repairGroup(id: string): Observable<ProjectionRepairResult | AdminApiError> {
+    return this.authed<ProjectionRepairResult>('POST', `/groups/${encodeURIComponent(id)}/repair`);
+  }
+
+  globalRules(): Observable<GlobalScopeRules | AdminApiError> {
+    return this.authed<GlobalScopeRules>('GET', '/global-rules');
+  }
+
+  updateGlobalRules(edit: GlobalScopeRulesEdit): Observable<GlobalScopeRules | AdminApiError> {
+    return this.authed<GlobalScopeRules>('PUT', '/global-rules', edit);
   }
 
   private authed<T>(method: string, path: string, body?: unknown): Observable<T | AdminApiError> {

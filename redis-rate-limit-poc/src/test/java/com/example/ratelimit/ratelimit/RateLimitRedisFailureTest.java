@@ -46,7 +46,13 @@ class RateLimitRedisFailureTest {
                 PolicyEnforcer.forExplicitPolicies(PolicyMatcher.fromYamlProperties(properties), store, global),
                 new RateLimitIdentityResolver(properties),
                 new RateLimitMetrics(new SimpleMeterRegistry()),
-                properties, new ObjectMapper(), Clock.systemUTC(), noExemptions());
+                properties, new ObjectMapper(), Clock.systemUTC(), noExemptions(),
+                new com.example.ratelimit.policy.EndpointExemptionService(null) {
+                    @Override
+                    public boolean isExempt(String method, String path) {
+                        return false;
+                    }
+                });
     }
 
     private static RateLimitFilter filter(FailureMode global, List<Policy> policies, boolean enabled,
@@ -59,7 +65,13 @@ class RateLimitRedisFailureTest {
                 PolicyEnforcer.forExplicitPolicies(PolicyMatcher.fromYamlProperties(properties), store, global),
                 new RateLimitIdentityResolver(properties),
                 new RateLimitMetrics(new SimpleMeterRegistry()),
-                properties, new ObjectMapper(), Clock.systemUTC(), noExemptions());
+                properties, new ObjectMapper(), Clock.systemUTC(), noExemptions(),
+                new com.example.ratelimit.policy.EndpointExemptionService(null) {
+                    @Override
+                    public boolean isExempt(String method, String path) {
+                        return false;
+                    }
+                });
     }
 
     private static RateLimitStore alwaysFails() {

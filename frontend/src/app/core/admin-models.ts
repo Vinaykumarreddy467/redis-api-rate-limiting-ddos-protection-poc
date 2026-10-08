@@ -130,6 +130,90 @@ export interface AdminApiError {
   problems: string[];
 }
 
+export type FailureMode = 'FAIL_OPEN' | 'FAIL_CLOSED';
+export type PolicyScope = 'ENDPOINT' | 'IP' | 'USER' | 'GLOBAL' | 'APPLICATION';
+export type PolicyAlgorithm =
+  | 'FIXED_WINDOW'
+  | 'SLIDING_WINDOW'
+  | 'SLIDING_WINDOW_COUNTER'
+  | 'TOKEN_BUCKET'
+  | 'LEAKY_BUCKET'
+  | 'CONCURRENCY_LIMIT';
+
+/** Matches PolicyGroup and the controller's GroupResponse JSON (projectionIds are not exposed). */
+export interface PolicyGroup {
+  id: string;
+  name: string;
+  enabled: boolean;
+  endpoints: EndpointRule[];
+  onRedisError: FailureMode | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
+/** Matches EndpointRule and EndpointRuleDto. */
+export interface EndpointRule {
+  id: string;
+  method: string;
+  path: string;
+  displayName: string;
+  repeatable: boolean;
+  exempt: boolean;
+  scopeRules: ScopeRule[];
+}
+
+/** Durations are ISO-8601 strings in controller DTOs; null represents omitted algorithm parameters. */
+export interface ScopeRule {
+  scope: PolicyScope;
+  algorithm: PolicyAlgorithm;
+  window: string | null;
+  limit: number | null;
+  capacity: number | null;
+  refillInterval: string | null;
+  cost: number | null;
+  drainRate: number | null;
+  queueCapacity: number | null;
+  maxConcurrent: number | null;
+  leaseDuration: string | null;
+  onRedisError: FailureMode | null;
+}
+
+/** Matches GlobalRulesResponse; update requests use the same writable fields plus version. */
+export interface GlobalScopeRules {
+  rules: ScopeRule[];
+  onRedisError: FailureMode | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
+/** Controller GroupRequest. Server-owned response metadata is intentionally excluded. */
+export interface PolicyGroupEdit {
+  id?: string;
+  name?: string;
+  enabled?: boolean;
+  endpoints: EndpointRule[];
+  onRedisError?: FailureMode | null;
+  version?: number;
+}
+
+/** Controller GlobalRulesRequest. */
+export interface GlobalScopeRulesEdit {
+  rules: ScopeRule[];
+  onRedisError?: FailureMode | null;
+  version: number;
+}
+
+export interface ProjectionRepairResult {
+  groupId: string;
+  written: number;
+  deleted: number;
+  at: string;
+}
+
 /** ISO-8601 duration (PT60S, PT1M, PT1H) to seconds. Null when absent or unparseable. */
 export function durationToSeconds(value: string | null | undefined): number | null {
   if (!value) return null;

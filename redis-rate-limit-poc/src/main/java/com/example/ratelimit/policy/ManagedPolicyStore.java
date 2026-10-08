@@ -8,6 +8,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -38,7 +39,11 @@ public class ManagedPolicyStore {
     static final String AUDIT = NS + ":audit";
     static final String SEEDED = NS + ":seeded";
     static final String META = NS + ":meta";
+    static final String GROUP_INDEX = NS + ":group-index";
+    static final String EPOCH = NS + ":epoch";
+    static final String PROJECTIONS = NS + ":projections";
     private static final String DOC_PREFIX = NS + ":doc:";
+    private static final String GROUP_PREFIX = NS + ":group:";
 
     /** Modes for {@link #WRITE}. */
     private static final int MODE_CREATE = 0;
@@ -97,6 +102,196 @@ public class ManagedPolicyStore {
               end
             end
             return docs
+            """, List.class);
+
+    private static final RedisScript<Long> RESET = new DefaultRedisScript<>("""
+            local removed = 0
+            local ids = redis.call('SMEMBERS', KEYS[1])
+            for _, id in ipairs(ids) do
+              if redis.call('DEL', 'ratelimit:policy:v1:doc:' .. id) > 0 then removed = removed + 1 end
+            end
+            local groupIds = redis.call('SMEMBERS', KEYS[2])
+            for _, id in ipairs(groupIds) do
+              if redis.call('DEL', 'ratelimit:policy:v1:group:' .. id) > 0 then removed = removed + 1 end
+            end
+            redis.call('DEL', KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5], KEYS[6],
+              'ratelimit:policy:v1:global-rules', 'ratelimit:policy:v1:global-rules:version',
+              'ratelimit:policy:v1:global-rules:updatedAt', 'ratelimit:policy:v1:global-rules:createdAt',
+              'ratelimit:policy:v1:global-rules:projectionIds')
+            redis.call('INCR', KEYS[7])
+            return removed
+            """, Long.class);
+
+    private static final RedisScript<List> REPAIR_PROJECTIONS = new DefaultRedisScript<>("""
+            local groupKey = KEYS[1]
+            if redis.call('EXISTS', groupKey) == 0 then return {-1, 0, 0} end
+            local storedVersion = tonumber(redis.call('HGET', groupKey, 'version') or '0')
+            if storedVersion ~= tonumber(ARGV[1]) then return {-2, storedVersion, 0} end
+            local epoch = tonumber(redis.call('GET', KEYS[2]) or '0')
+            if epoch ~= tonumber(ARGV[2]) then return {-3, epoch, 0} end
+            local oldIds = cjson.decode(redis.call('HGET', groupKey, 'projectionIds') or '[]')
+            local desiredIds = cjson.decode(ARGV[4])
+            local desired = {}
+            for _, id in ipairs(desiredIds) do desired[id] = true end
+            local deleted = 0
+            for _, id in ipairs(oldIds) do
+              if not desired[id] and redis.call('SISMEMBER', KEYS[3], id) == 1 then
+                if redis.call('DEL', 'ratelimit:policy:v1:doc:' .. id) > 0 then deleted = deleted + 1 end
+                redis.call('SREM', KEYS[3], id)
+                redis.call('SREM', KEYS[4], id)
+              end
+            end
+            local projections = cjson.decode(ARGV[5])
+            local written = 0
+            for _, proj in ipairs(projections) do
+              local key = 'ratelimit:policy:v1:doc:' .. proj.id
+              if redis.call('HGET', key, 'doc') ~= proj.json
+                  or redis.call('SISMEMBER', KEYS[3], proj.id) == 0
+                  or redis.call('SISMEMBER', KEYS[4], proj.id) == 0 then written = written + 1 end
+              redis.call('HSET', key, 'doc', proj.json, 'version', tostring(proj.version))
+              redis.call('SADD', KEYS[3], proj.id)
+              redis.call('SADD', KEYS[4], proj.id)
+            end
+            redis.call('HSET', groupKey, 'doc', ARGV[3], 'projectionIds', ARGV[4])
+            redis.call('INCR', KEYS[2])
+            return {1, written, deleted}
+            """, List.class);
+
+    /**
+     * Atomic group write with projections. KEYS[1]=group key, KEYS[2]=group index, KEYS[3]=epoch,
+     * KEYS[4]=projection index, KEYS[5]=policy index.
+     * ARGV[1]=mode (0=create, 1=update) ARGV[2]=groupId ARGV[3]=groupJson ARGV[4]=version
+     * ARGV[5]=expectedEpoch ARGV[6]=updatedAt ARGV[7]=createdAt ARGV[8]=updatedBy
+     * ARGV[9]=projectionsJson (list of {id, json}) ARGV[10]=projectionCount
+     *
+     * Returns {code, storedVersion}. code: 1=ok, -1=missing, -2=version conflict, -3=epoch conflict.
+     */
+    private static final RedisScript<List> GROUP_WRITE = new DefaultRedisScript<>("""
+            local mode = tonumber(ARGV[1])
+            local groupId = ARGV[2]
+            local groupKey = KEYS[1]
+            local exists = redis.call('EXISTS', groupKey)
+            local epoch = tonumber(redis.call('GET', KEYS[3]) or '0')
+            if epoch ~= tonumber(ARGV[5]) then return {-3, epoch} end
+
+            if mode == 0 then
+              if exists == 1 then return {-1, tonumber(redis.call('HGET', groupKey, 'version') or '0')} end
+            else
+              if exists == 0 then return {-1, 0} end
+              local stored = tonumber(redis.call('HGET', groupKey, 'version') or '0')
+              if stored ~= tonumber(ARGV[4]) - 1 then return {-2, stored} end
+            end
+
+            redis.call('HSET', groupKey, 'doc', ARGV[3], 'version', ARGV[4], 'updatedAt', ARGV[6])
+            redis.call('HSETNX', groupKey, 'createdAt', ARGV[7])
+            redis.call('SADD', KEYS[2], groupId)
+
+            -- delete old projections for this group
+            local oldProj = redis.call('HGET', groupKey, 'projectionIds')
+            if oldProj then
+              local ids = cjson.decode(oldProj)
+              for i, pid in ipairs(ids) do
+                redis.call('DEL', 'ratelimit:policy:v1:doc:' .. pid)
+                redis.call('SREM', KEYS[4], pid)
+                redis.call('SREM', KEYS[5], pid)
+              end
+            end
+
+            -- write new projections
+            local projections = cjson.decode(ARGV[9])
+            local projIds = {}
+            for i, proj in ipairs(projections) do
+              redis.call('HSET', 'ratelimit:policy:v1:doc:' .. proj.id, 'doc', proj.json, 'version', ARGV[4])
+              redis.call('SADD', KEYS[4], proj.id)
+              redis.call('SADD', KEYS[5], proj.id)
+              table.insert(projIds, proj.id)
+            end
+            redis.call('HSET', groupKey, 'projectionIds', cjson.encode(projIds))
+
+            redis.call('INCR', KEYS[3])
+            return {1, tonumber(ARGV[4])}
+            """, List.class);
+
+    /**
+     * Atomic group delete with projections. KEYS[1]=group key, KEYS[2]=group index, KEYS[3]=epoch,
+     * KEYS[4]=projection index, KEYS[5]=policy index.
+     * ARGV[1]=groupId ARGV[2]=expectedEpoch ARGV[3]=projectionIdsJson
+     *
+     * Returns {code}. code: 1=ok, -1=missing, -3=epoch conflict.
+     */
+    private static final RedisScript<List> GROUP_DELETE = new DefaultRedisScript<>("""
+            local groupId = ARGV[1]
+            local groupKey = KEYS[1]
+            local exists = redis.call('EXISTS', groupKey)
+            if exists == 0 then return {-1} end
+            local epoch = tonumber(redis.call('GET', KEYS[3]) or '0')
+            if epoch ~= tonumber(ARGV[2]) then return {-3, epoch} end
+
+            local projIds = cjson.decode(redis.call('HGET', groupKey, 'projectionIds') or '[]')
+            for i, pid in ipairs(projIds) do
+              redis.call('DEL', 'ratelimit:policy:v1:doc:' .. pid)
+              redis.call('SREM', KEYS[4], pid)
+              redis.call('SREM', KEYS[5], pid)
+            end
+            redis.call('DEL', groupKey)
+            redis.call('SREM', KEYS[2], groupId)
+            redis.call('INCR', KEYS[3])
+            return {1}
+            """, List.class);
+
+    /**
+     * Atomic global-rules write with projections. KEYS[1]=global-rules key, KEYS[2]=epoch,
+     * KEYS[3]=projection index, KEYS[4]=policy index.
+     * ARGV[1]=mode (0=create, 1=update) ARGV[2]=rulesJson ARGV[3]=version
+     * ARGV[4]=expectedEpoch ARGV[5]=updatedAt ARGV[6]=createdAt ARGV[7]=updatedBy
+     * ARGV[8]=projectionsJson ARGV[9]=projectionCount
+     *
+     * Returns {code, storedVersion}. code: 1=ok, -1=missing, -2=version conflict, -3=epoch conflict.
+     */
+    private static final RedisScript<List> GLOBAL_WRITE = new DefaultRedisScript<>("""
+            local mode = tonumber(ARGV[1])
+            local rulesKey = KEYS[1]
+            local exists = redis.call('EXISTS', rulesKey)
+            local epoch = tonumber(redis.call('GET', KEYS[2]) or '0')
+            if epoch ~= tonumber(ARGV[4]) then return {-3, epoch} end
+
+            if mode == 0 then
+              if exists == 1 then return {-1, tonumber(redis.call('GET', rulesKey .. ':version') or '0')} end
+            else
+              if exists == 0 then return {-1, 0} end
+              local stored = tonumber(redis.call('GET', rulesKey .. ':version') or '0')
+              if stored ~= tonumber(ARGV[3]) - 1 then return {-2, stored} end
+            end
+
+            redis.call('SET', rulesKey, ARGV[2])
+            redis.call('SET', rulesKey .. ':version', ARGV[3])
+            redis.call('SET', rulesKey .. ':updatedAt', ARGV[5])
+            redis.call('SETNX', rulesKey .. ':createdAt', ARGV[6])
+
+            -- delete old projections
+            local oldProj = redis.call('GET', rulesKey .. ':projectionIds')
+            if oldProj then
+              local ids = cjson.decode(oldProj)
+              for i, pid in ipairs(ids) do
+                redis.call('DEL', 'ratelimit:policy:v1:doc:' .. pid)
+                redis.call('SREM', KEYS[3], pid)
+                redis.call('SREM', KEYS[4], pid)
+              end
+            end
+
+            -- write new projections
+            local projections = cjson.decode(ARGV[8])
+            local projIds = {}
+            for i, proj in ipairs(projections) do
+              redis.call('HSET', 'ratelimit:policy:v1:doc:' .. proj.id, 'doc', proj.json, 'version', ARGV[3])
+              redis.call('SADD', KEYS[3], proj.id)
+              redis.call('SADD', KEYS[4], proj.id)
+              table.insert(projIds, proj.id)
+            end
+            redis.call('SET', rulesKey .. ':projectionIds', cjson.encode(projIds))
+
+            redis.call('INCR', KEYS[2])
+            return {1, tonumber(ARGV[3])}
             """, List.class);
 
     private final StringRedisTemplate redis;
@@ -296,20 +491,14 @@ public class ManagedPolicyStore {
         return List.copyOf(changed);
     }
 
-    /** Deletes every policy, the audit list and the seeded marker. Intentional local reset only. */
+    /** Deletes every policy, group, global rules, the audit list and the seeded marker. Intentional local reset only. */
     public int reset(String actor) {
         try {
-            Collection<String> ids = redis.opsForSet().members(INDEX);
-            int removed = 0;
-            if (ids != null) {
-                for (String id : ids) {
-                    redis.delete(docKey(id));
-                    removed++;
-                }
-            }
-            redis.delete(List.of(INDEX, AUDIT, SEEDED, META));
-            log.warn("policy store reset by {}: {} policies removed", actor, removed);
-            return removed;
+            Long removed = redis.execute(RESET, List.of(INDEX, GROUP_INDEX, AUDIT, SEEDED, META,
+                    PROJECTIONS, EPOCH));
+            int count = removed == null ? 0 : removed.intValue();
+            log.warn("policy store reset by {}: {} policy documents removed", actor, count);
+            return count;
         } catch (DataAccessException e) {
             throw new PolicyStoreUnavailableException("redis unavailable during policy store reset", e);
         }
@@ -317,6 +506,245 @@ public class ManagedPolicyStore {
 
     private static String docKey(String id) {
         return DOC_PREFIX + id;
+    }
+
+    private static String groupKey(String id) {
+        return GROUP_PREFIX + id;
+    }
+
+    // --- group and global-rules persistence ---
+
+    public long getEpoch() {
+        try {
+            Object val = redis.opsForValue().get(EPOCH);
+            return val == null ? 0 : Long.parseLong(val.toString());
+        } catch (DataAccessException e) {
+            throw new PolicyStoreUnavailableException("redis unavailable reading epoch", e);
+        }
+    }
+
+    public Optional<PolicyGroup> findGroup(String id) {
+        try {
+            var key = groupKey(id);
+            Object json = redis.opsForHash().get(key, "doc");
+            if (json == null) {
+                return Optional.empty();
+            }
+            PolicyGroup group = mapper.readValue(json.toString(), PolicyGroup.class);
+            Object ids = redis.opsForHash().get(key, "projectionIds");
+            if ((group.projectionIds() == null || group.projectionIds().isEmpty()) && ids != null) {
+                group = withProjectionIds(group, mapper.readValue(ids.toString(),
+                        mapper.getTypeFactory().constructCollectionType(List.class, String.class)));
+            }
+            return Optional.of(group);
+        } catch (DataAccessException e) {
+            throw new PolicyStoreUnavailableException("redis unavailable reading group " + id, e);
+        } catch (Exception e) {
+            throw new PolicyStoreException("stored group " + id + " is not readable JSON", e);
+        }
+    }
+
+    public List<PolicyGroup> findAllGroups() {
+        try {
+            var ids = redis.opsForSet().members(GROUP_INDEX);
+            var out = new ArrayList<PolicyGroup>();
+            if (ids == null) {
+                return out;
+            }
+            for (var id : ids) {
+                Object json = redis.opsForHash().get(groupKey(id.toString()), "doc");
+                if (json != null) {
+                    try {
+                        out.add(mapper.readValue(json.toString(), PolicyGroup.class));
+                    } catch (Exception e) {
+                        log.warn("skipping unreadable group doc: {}", e.getMessage());
+                    }
+                }
+            }
+            out.sort((a, b) -> a.id().compareTo(b.id()));
+            return out;
+        } catch (DataAccessException e) {
+            throw new PolicyStoreUnavailableException("redis unavailable listing groups", e);
+        }
+    }
+
+    public PolicyGroup saveGroup(PolicyGroup group, PolicyGroup existing, String actor,
+            List<PolicyDocument> projections, long expectedEpoch) {
+        for (var proj : projections) {
+            proj.validate();
+        }
+        int mode = existing == null ? MODE_CREATE : MODE_UPDATE;
+        String groupJson;
+        String projJson;
+        PolicyGroup persisted = withProjectionIds(group, projections.stream().map(PolicyDocument::id).toList());
+        try {
+            groupJson = mapper.writeValueAsString(persisted);
+            List<java.util.Map<String, String>> projList = new ArrayList<>();
+            for (var proj : projections) {
+                projList.add(java.util.Map.of("id", proj.id(), "json", mapper.writeValueAsString(proj)));
+            }
+            projJson = mapper.writeValueAsString(projList);
+        } catch (Exception e) {
+            throw new PolicyStoreException("group could not be serialised", e);
+        }
+
+        List<Long> result;
+        try {
+            result = redis.execute(GROUP_WRITE, List.of(groupKey(group.id()), GROUP_INDEX, EPOCH, PROJECTIONS, INDEX),
+                    String.valueOf(mode), group.id(), groupJson, String.valueOf(group.version()),
+                    String.valueOf(expectedEpoch), group.updatedAt().toString(),
+                    group.createdAt().toString(), group.updatedBy(), projJson,
+                    String.valueOf(projections.size()));
+        } catch (DataAccessException e) {
+            throw new PolicyStoreUnavailableException("redis unavailable writing group " + group.id(), e);
+        }
+        if (result == null || result.size() < 2) {
+            throw new PolicyStoreUnavailableException("redis returned no result for the group write", null);
+        }
+        int code = result.get(0).intValue();
+        if (code == MISSING) {
+            throw new PolicyNotFoundException(group.id());
+        }
+        if (code == CONFLICT) {
+            throw new PolicyConflictException(result.get(1), group.version());
+        }
+        if (code == -3) {
+            throw new PolicyConflictException(result.get(1), group.version());
+        }
+
+        record(actor, group.id(), existing == null ? "CREATE_GROUP" : "UPDATE_GROUP", group.version(),
+                List.of("group"));
+        return persisted;
+    }
+
+    public void deleteGroup(String id, String actor, long expectedEpoch) {
+        var existing = findGroup(id).orElseThrow(() -> new PolicyNotFoundException(id));
+        List<Long> result;
+        try {
+            result = redis.execute(GROUP_DELETE, List.of(groupKey(id), GROUP_INDEX, EPOCH, PROJECTIONS, INDEX),
+                    id, String.valueOf(expectedEpoch));
+        } catch (DataAccessException e) {
+            throw new PolicyStoreUnavailableException("redis unavailable deleting group " + id, e);
+        } catch (Exception e) {
+            throw new PolicyStoreException("group projection ids could not be serialised", e);
+        }
+        if (result == null || result.isEmpty()) {
+            throw new PolicyStoreUnavailableException("redis returned no result for the group delete", null);
+        }
+        if (result.get(0).intValue() == MISSING) {
+            throw new PolicyNotFoundException(id);
+        }
+        if (result.get(0).intValue() == -3) {
+            throw new PolicyConflictException(0, 0);
+        }
+        record(actor, id, "DELETE_GROUP", existing.version(), List.of("group"));
+    }
+
+    public Optional<GlobalScopeRules> findGlobalRules() {
+        try {
+            Object json = redis.opsForValue().get(NS + ":global-rules");
+            if (json == null) {
+                return Optional.empty();
+            }
+            return Optional.of(mapper.readValue(json.toString(), GlobalScopeRules.class));
+        } catch (DataAccessException e) {
+            throw new PolicyStoreUnavailableException("redis unavailable reading global rules", e);
+        } catch (Exception e) {
+            throw new PolicyStoreException("stored global rules are not readable JSON", e);
+        }
+    }
+
+    public GlobalScopeRules saveGlobalRules(GlobalScopeRules rules, GlobalScopeRules existing, String actor,
+            List<PolicyDocument> projections, long expectedEpoch) {
+        int mode = existing == null ? MODE_CREATE : MODE_UPDATE;
+        String rulesJson;
+        String projJson;
+        try {
+            rulesJson = mapper.writeValueAsString(rules);
+            List<java.util.Map<String, String>> projList = new ArrayList<>();
+            for (var proj : projections) {
+                projList.add(java.util.Map.of("id", proj.id(), "json", mapper.writeValueAsString(proj)));
+            }
+            projJson = mapper.writeValueAsString(projList);
+        } catch (Exception e) {
+            throw new PolicyStoreException("global rules could not be serialised", e);
+        }
+
+        List<Long> result;
+        try {
+            result = redis.execute(GLOBAL_WRITE, List.of(NS + ":global-rules", EPOCH, PROJECTIONS, INDEX),
+                    String.valueOf(mode), rulesJson, String.valueOf(rules.version()),
+                    String.valueOf(expectedEpoch), rules.updatedAt().toString(),
+                    rules.createdAt().toString(), rules.updatedBy(), projJson,
+                    String.valueOf(projections.size()));
+        } catch (DataAccessException e) {
+            throw new PolicyStoreUnavailableException("redis unavailable writing global rules", e);
+        }
+        if (result == null || result.size() < 2) {
+            throw new PolicyStoreUnavailableException("redis returned no result for the global rules write", null);
+        }
+        int code = result.get(0).intValue();
+        if (code == MISSING) {
+            throw new PolicyNotFoundException("global-rules");
+        }
+        if (code == CONFLICT) {
+            throw new PolicyConflictException(result.get(1), rules.version());
+        }
+        if (code == -3) {
+            throw new PolicyConflictException(result.get(1), rules.version());
+        }
+
+        record(actor, "global-rules", existing == null ? "CREATE_GLOBAL" : "UPDATE_GLOBAL", rules.version(),
+                List.of("global-rules"));
+        return rules;
+    }
+
+    public RepairCounts repairProjections(String groupId, String actor) {
+        var groupOpt = findGroup(groupId);
+        if (groupOpt.isEmpty()) {
+            throw new PolicyNotFoundException(groupId);
+        }
+        var group = groupOpt.get();
+        var projectionService = new com.example.ratelimit.policy.ProjectionService();
+        var projections = projectionService.projectGroup(group);
+        var ids = projections.stream().map(PolicyDocument::id).toList();
+        var updatedGroup = withProjectionIds(group, ids);
+
+        try {
+            var projList = new ArrayList<java.util.Map<String, String>>();
+            for (var proj : projections) {
+                projList.add(java.util.Map.of("id", proj.id(), "json", mapper.writeValueAsString(proj),
+                        "version", String.valueOf(proj.version())));
+            }
+            List<Long> result = redis.execute(REPAIR_PROJECTIONS,
+                    List.of(groupKey(groupId), EPOCH, PROJECTIONS, INDEX),
+                    String.valueOf(group.version()), String.valueOf(getEpoch()),
+                    mapper.writeValueAsString(updatedGroup), mapper.writeValueAsString(ids),
+                    mapper.writeValueAsString(projList));
+            if (result == null || result.size() < 3) {
+                throw new PolicyStoreUnavailableException("redis returned no result repairing projections", null);
+            }
+            if (result.get(0).intValue() == MISSING) throw new PolicyNotFoundException(groupId);
+            if (result.get(0).intValue() == CONFLICT || result.get(0).intValue() == -3) {
+                throw new PolicyConflictException(result.get(1), group.version());
+            }
+            var counts = new RepairCounts(result.get(1).intValue(), result.get(2).intValue());
+            record(actor, groupId, "REPAIR", group.version(), List.of("projections"));
+            return counts;
+        } catch (DataAccessException e) {
+            throw new PolicyStoreUnavailableException("redis unavailable repairing projections", e);
+        } catch (Exception e) {
+            if (e instanceof RuntimeException runtime) throw runtime;
+            throw new PolicyStoreException("projection serialisation failed", e);
+        }
+    }
+
+    public record RepairCounts(int written, int deleted) { }
+
+    private static PolicyGroup withProjectionIds(PolicyGroup group, List<String> projectionIds) {
+        return new PolicyGroup(group.id(), group.name(), group.enabled(), group.endpoints(),
+                group.onRedisError(), group.version(), group.createdAt(), group.updatedAt(),
+                group.updatedBy(), projectionIds);
     }
 
     /** Redis unreachable while reading or writing policy state. Maps to 503. */

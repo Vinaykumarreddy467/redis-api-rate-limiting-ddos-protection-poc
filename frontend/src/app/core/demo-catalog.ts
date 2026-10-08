@@ -11,6 +11,20 @@ export interface DemoRoute {
   note: string;
 }
 
+/** A managed group endpoint, actionable only after it is resolved from the authenticated group catalog. */
+export interface GroupDemoEndpoint {
+  id: string;
+  groupId: string;
+  groupName: string;
+  method: string;
+  path: string;
+  displayName: string;
+  exempt: boolean;
+  enabled: boolean;
+  requiresCredentials: boolean;
+  note: string;
+}
+
 export const DEFAULT_REQUEST_COUNT = 20;
 export const MAX_REQUEST_COUNT = 150;
 

@@ -170,6 +170,41 @@ class PolicyAdminControllerTest {
     }
 
     @Test
+    void legacyProjectionOperationsUpdateTheOwningGroupWithoutDroppingSiblingRules() {
+        var endpointRules = java.util.List.of(
+                Map.of("scope", "ENDPOINT", "algorithm", "FIXED_WINDOW", "window", "PT1M", "limit", 10),
+                Map.of("scope", "IP", "algorithm", "FIXED_WINDOW", "window", "PT1M", "limit", 60));
+        var endpoint = Map.of("id", "ep-legacy", "method", "GET", "path", "/api/legacy-group",
+                "displayName", "Legacy endpoint", "repeatable", true, "exempt", false,
+                "scopeRules", endpointRules);
+        var group = Map.of("id", "group-legacy", "name", "Legacy group", "enabled", true,
+                "onRedisError", "FAIL_OPEN", "endpoints", java.util.List.of(endpoint));
+        var created = rest.exchange("/api/admin/rate-limit/groups", HttpMethod.POST,
+                new HttpEntity<>(group, admin()), String.class);
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+
+        var projectionId = new com.example.ratelimit.policy.ProjectionService()
+                .projectionId("group-legacy", "ep-legacy", com.example.ratelimit.policy.Scope.ENDPOINT);
+        var listed = rest.exchange("/api/admin/rate-limit/policies", HttpMethod.GET,
+                new HttpEntity<>(admin()), String.class);
+        assertThat(listed.getBody()).contains(projectionId);
+
+        var update = Map.of("algorithm", "FIXED_WINDOW", "scope", "ENDPOINT", "window", "PT1M",
+                "limit", 15, "version", 1);
+        var updated = rest.exchange("/api/admin/rate-limit/policies/" + projectionId, HttpMethod.PUT,
+                new HttpEntity<>(update, admin()), String.class);
+        assertThat(updated.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(updated.getBody()).contains("\"limit\":15");
+
+        var deleted = rest.exchange("/api/admin/rate-limit/policies/" + projectionId, HttpMethod.DELETE,
+                new HttpEntity<>(admin()), String.class);
+        assertThat(deleted.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+        var detail = rest.exchange("/api/admin/rate-limit/groups/group-legacy", HttpMethod.GET,
+                new HttpEntity<>(admin()), String.class);
+        assertThat(detail.getBody()).contains("\"scope\":\"IP\"").doesNotContain("\"scope\":\"ENDPOINT\"");
+    }
+
+    @Test
     void staleVersionReturnsConflictAndKeepsTheStoredPolicy() {
         var create = Map.of(
                 "id", "conflict-route", "method", "GET", "path", "/api/conflict",

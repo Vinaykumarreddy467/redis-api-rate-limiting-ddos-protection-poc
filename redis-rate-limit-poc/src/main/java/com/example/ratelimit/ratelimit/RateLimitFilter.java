@@ -52,10 +52,12 @@ public class RateLimitFilter extends OncePerRequestFilter {
     private final Clock clock;
     private final AntPathMatcher matcher = new AntPathMatcher();
     private final com.example.ratelimit.policy.ExemptionStore exemptions;
+    private final com.example.ratelimit.policy.EndpointExemptionService endpointExemptions;
 
     public RateLimitFilter(PolicyEnforcer enforcer, RateLimitIdentityResolver identities,
             RateLimitMetrics metrics, RateLimitProperties properties, ObjectMapper mapper, Clock clock,
-            com.example.ratelimit.policy.ExemptionStore exemptions) {
+            com.example.ratelimit.policy.ExemptionStore exemptions,
+            com.example.ratelimit.policy.EndpointExemptionService endpointExemptions) {
         this.enforcer = enforcer;
         this.identities = identities;
         this.metrics = metrics;
@@ -63,6 +65,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
         this.mapper = mapper;
         this.clock = clock;
         this.exemptions = exemptions;
+        this.endpointExemptions = endpointExemptions;
     }
 
     @Override
@@ -110,6 +113,16 @@ public class RateLimitFilter extends OncePerRequestFilter {
             }
         } catch (RuntimeException e) {
             log.warn("exemption lookup failed for {} {}: {}", method, path, e.getMessage());
+        }
+
+        // Endpoint-level exemptions from policy groups bypass all rules.
+        try {
+            if (endpointExemptions.isExempt(method, path)) {
+                chain.doFilter(request, response);
+                return;
+            }
+        } catch (RuntimeException e) {
+            log.warn("endpoint exemption lookup failed for {} {}: {}", method, path, e.getMessage());
         }
 
         List<PolicyDocument> applicable = enforcer.applicablePolicies(method, path);

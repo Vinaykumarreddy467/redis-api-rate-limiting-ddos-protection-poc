@@ -37,6 +37,7 @@ export class PolicyEditorComponent implements OnInit {
   /** Null opens the editor in create mode. */
   readonly policyId = input<string | null>(null);
   readonly closed = output<void>();
+  readonly exemptionSaved = output<void>();
 
   protected readonly idField = viewChild<ElementRef<HTMLInputElement>>('idField');
 
@@ -120,14 +121,14 @@ export class PolicyEditorComponent implements OnInit {
     this.store.busy.set(true);
     try {
       if (this.fExempt()) {
-        const result = await this.store.saveExemption({
+        const saved = await this.store.saveExemption({
           id,
           name: this.fName().trim() || id,
           method: this.fMethod(),
           path: this.fPath().trim(),
           enabled: this.fEnabled(),
         });
-        if (!('status' in result)) this.onClose();
+        if (!('status' in saved)) this.exemptionSaved.emit();
         return;
       }
 
