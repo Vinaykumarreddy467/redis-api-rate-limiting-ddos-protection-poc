@@ -1,4 +1,16 @@
-import { ChangeDetectionStrategy, Component, computed, inject, input, output, signal } from '@angular/core';
+import {
+  afterNextRender,
+  ChangeDetectionStrategy,
+  Component,
+  computed,
+  ElementRef,
+  inject,
+  Injector,
+  input,
+  OnInit,
+  output,
+  signal,
+} from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 
@@ -21,6 +33,7 @@ const ALGORITHMS: PolicyAlgorithm[] = [
 const GROUP_SCOPES: PolicyScope[] = ['ENDPOINT', 'IP', 'USER'];
 const GLOBAL_SCOPES: PolicyScope[] = ['APPLICATION', 'GLOBAL'];
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS', 'ANY'];
+const GROUP_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 @Component({
   selector: 'app-policy-group-editor',
@@ -29,8 +42,10 @@ const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS', 'AN
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './policy-group-editor.component.html',
 })
-export class PolicyGroupEditorComponent {
+export class PolicyGroupEditorComponent implements OnInit {
   protected readonly store = inject(AdminStore);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
   readonly group = input<PolicyGroup | null>(null);
   readonly globalRulesOnly = input(false);
   readonly closed = output<void>();
@@ -61,8 +76,19 @@ export class PolicyGroupEditorComponent {
   protected readonly confirmGroupDelete = signal(false);
   protected readonly editorBusy = signal(false);
   protected readonly endpointFormOpen = signal(false);
+  /** Set once the user has tried to save, so an untouched empty form is not shown as an error. */
+  protected readonly submitted = signal(false);
+  protected readonly endpointError = signal<string | null>(null);
+  protected readonly groupIdError = computed(() =>
+    !this.editMode() && !GROUP_ID_PATTERN.test(this.groupId().trim())
+      ? 'Use lowercase letters, digits and hyphens, starting with a letter or digit (for example orders-api).'
+      : null);
 
-  constructor() {
+  /**
+   * Seeds the form from the inputs. This must not run in the constructor: signal inputs are only set
+   * after construction, so reading them there always returns null and the edit form opened empty.
+   */
+  ngOnInit(): void {
     const group = this.group();
     if (group) {
       this.groupId.set(group.id);
@@ -76,6 +102,19 @@ export class PolicyGroupEditorComponent {
       this.globalRules.set(globals.rules.map((rule) => ({ ...rule })));
       this.globalFailureMode.set(globals.onRedisError ?? '');
     }
+  }
+
+  /**
+   * Shows an error banner and brings it into view. The editor is a long scrolling modal and the action
+   * buttons sit at the bottom, so a banner at the top would otherwise appear to do nothing.
+   */
+  private showError(error: { code: string; message: string; problems: string[] }): void {
+    this.validation.set(error);
+    afterNextRender(() => {
+      const banner = this.host.nativeElement.querySelector<HTMLElement>('[data-validation-banner]');
+      banner?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      banner?.focus({ preventScroll: true });
+    }, { injector: this.injector });
   }
 
   protected scopeRules(): ScopeRule[] { return this.endpointRules(); }
@@ -126,6 +165,7 @@ export class PolicyGroupEditorComponent {
   }
 
   protected beginAddEndpoint(): void {
+    this.endpointError.set(null);
     this.endpointFormOpen.set(true);
     this.endpointDraft.set(null);
     this.endpointEditingId.set(null);
@@ -139,6 +179,7 @@ export class PolicyGroupEditorComponent {
   }
 
   protected beginEditEndpoint(endpoint: EndpointRule): void {
+    this.endpointError.set(null);
     this.endpointFormOpen.set(true);
     this.endpointDraft.set(endpoint);
     this.endpointEditingId.set(endpoint.id);
@@ -151,9 +192,18 @@ export class PolicyGroupEditorComponent {
     this.endpointRules.set(endpoint.scopeRules.map((rule) => ({ ...rule })));
   }
 
-  protected cancelEndpointEdit(): void { this.endpointDraft.set(null); this.endpointFormOpen.set(false); }
+  protected cancelEndpointEdit(): void {
+    this.endpointDraft.set(null);
+    this.endpointError.set(null);
+    this.endpointFormOpen.set(false);
+  }
 
   protected saveEndpoint(): void {
+    if (!this.endpointPath().trim().startsWith('/')) {
+      this.endpointError.set('Path is required and must start with "/" (for example /api/products).');
+      return;
+    }
+    this.endpointError.set(null);
     const endpoint: EndpointRule = {
       id: this.endpointId().trim() || `endpoint-${Date.now()}`,
       displayName: this.endpointName().trim() || this.endpointPath().trim(),
@@ -175,9 +225,10 @@ export class PolicyGroupEditorComponent {
 
   protected async save(): Promise<void> {
     this.validation.set(null);
+    this.submitted.set(true);
     const isNew = this.group() === null;
-    if (isNew && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(this.groupId().trim())) {
-      this.validation.set({ code: 'validation', message: 'Group id is invalid.', problems: ['Use lowercase letters, digits, and hyphens.'] });
+    if (isNew && this.groupIdError()) {
+      this.showError({ code: 'validation', message: 'Group id is invalid.', problems: [this.groupIdError()!] });
       return;
     }
     const body: PolicyGroupEdit = {
@@ -192,7 +243,7 @@ export class PolicyGroupEditorComponent {
     try {
       const result = await this.store.saveGroup(body, this.group()?.id ?? null);
       if ('status' in result) {
-        this.validation.set({ code: result.code, message: result.message, problems: result.problems });
+        this.showError({ code: result.code, message: result.message, problems: result.problems });
       } else {
         this.closed.emit();
       }
@@ -213,7 +264,7 @@ export class PolicyGroupEditorComponent {
     try {
       const result = await this.store.saveGlobalRules(body);
       if ('status' in result) {
-        this.validation.set({ code: result.code, message: result.message, problems: result.problems });
+        this.showError({ code: result.code, message: result.message, problems: result.problems });
       }
     } finally {
       this.editorBusy.set(false);
@@ -234,7 +285,7 @@ export class PolicyGroupEditorComponent {
     this.editorBusy.set(true);
     try {
       const result = await this.store.deleteEndpoint(group.id, endpointId);
-      if ('status' in result) this.validation.set({ code: result.code, message: result.message, problems: result.problems });
+      if ('status' in result) this.showError({ code: result.code, message: result.message, problems: result.problems });
       else this.endpoints.set(result.endpoints);
     } finally {
       this.editorBusy.set(false);
@@ -251,7 +302,7 @@ export class PolicyGroupEditorComponent {
     this.editorBusy.set(true);
     try {
       await this.store.deleteGroup(group.id);
-      if (this.store.actionError()) this.validation.set({ code: 'delete_error', message: this.store.actionError()!, problems: [] });
+      if (this.store.actionError()) this.showError({ code: 'delete_error', message: this.store.actionError()!, problems: [] });
       else this.closed.emit();
     } finally {
       this.editorBusy.set(false);
@@ -265,7 +316,7 @@ export class PolicyGroupEditorComponent {
     try {
       await this.store.repairGroup(group.id);
       if (this.store.actionError()) {
-        this.validation.set({ code: 'repair_error', message: this.store.actionError()!, problems: [] });
+        this.showError({ code: 'repair_error', message: this.store.actionError()!, problems: [] });
       }
     } finally {
       this.editorBusy.set(false);

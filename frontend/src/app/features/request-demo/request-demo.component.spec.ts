@@ -478,6 +478,31 @@ describe('RequestDemoComponent', () => {
     expect(text()).toContain('No policy groups available. Select the legacy demo catalog.');
   });
 
+  it('explains why a group endpoint outside /api/ cannot be run instead of leaving a silent dead button', async () => {
+    await loadGroups(
+      [policyGroup({ endpoints: [endpointRule({ path: '/lol/lol', displayName: 'lol' })] })],
+      [target({ policyId: 'login-attempt', configuredMethod: 'POST', configuredPath: '/api/login' })],
+    );
+
+    await setMode('groups');
+
+    const start = (fixture.nativeElement as HTMLElement).querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    expect(start.disabled).toBe(true);
+    expect(text()).toContain('/lol/lol is outside that, so it cannot be run from here');
+    // The legacy catalogue's first policy must not be described as if it belonged to this endpoint.
+    expect(text()).not.toContain('The console sends');
+    expect(text()).not.toContain('login-attempt');
+  });
+
+  it('runs a group endpoint even when the legacy catalogue has no targets', async () => {
+    await loadGroups([policyGroup()], []);
+
+    await setMode('groups');
+
+    const start = (fixture.nativeElement as HTMLElement).querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    expect(start.disabled).toBe(false);
+  });
+
   it('legacy mode still works when switched back from groups mode', async () => {
     await loadGroups(
       [policyGroup()],

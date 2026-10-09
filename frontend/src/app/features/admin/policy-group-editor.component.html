@@ -9,7 +9,7 @@
     </header>
 
     @if (validation(); as error) {
-      <div class="alert alert-bad" role="alert" aria-label="Backend validation error">
+      <div class="alert alert-bad" role="alert" aria-label="Validation error" data-validation-banner tabindex="-1">
         <strong>{{ error.code }}</strong><p>{{ error.message }}</p>
         @if (error.problems.length) { <ul>@for (problem of error.problems; track problem) { <li>{{ problem }}</li> }</ul> }
       </div>
@@ -20,12 +20,14 @@
       <legend>Group</legend>
       <div class="field-grid">
         @if (!editMode()) {
-          <label class="field">Group id<input name="group-id" [ngModel]="groupId()" (ngModelChange)="groupId.set($event)" required /></label>
+          <label class="field">Group id<input name="group-id" [ngModel]="groupId()" (ngModelChange)="groupId.set($event)" required
+            [attr.aria-invalid]="submitted() && groupIdError() ? 'true' : null" aria-describedby="group-id-error" />
+            @if (submitted() && groupIdError(); as message) { <span class="field-error" id="group-id-error">{{ message }}</span> }</label>
         }
         <label class="field">Name<input name="group-name" [ngModel]="groupName()" (ngModelChange)="groupName.set($event)" /></label>
         <label class="field">On Redis error
           <select name="group-failure" [ngModel]="groupFailureMode()" (ngModelChange)="groupFailureMode.set($event)">
-            <option value="">Inherit global default</option><option value="FAIL_OPEN">FAIL_OPEN</option><option value="FAIL_CLOSED">FAIL_CLOSED</option>
+            <option value="">Inherit global default</option><option value="FAIL_OPEN">Fail open (allow)</option><option value="FAIL_CLOSED">Fail closed (503)</option>
           </select>
         </label>
         <label class="field field-inline"><input type="checkbox" name="group-enabled" [ngModel]="groupEnabled()" (ngModelChange)="groupEnabled.set($event)" /> Enabled</label>
@@ -82,6 +84,7 @@
           }
           @for (scope of groupScopes; track scope) { @if (!scopeRules().some(rule => rule.scope === scope)) { <button type="button" class="btn-ghost" (click)="addRule(scope)">Add {{ scope }} scope</button> } }
         }
+        @if (endpointError(); as message) { <p class="field-error" role="alert">{{ message }}</p> }
         <div class="row"><button type="button" class="btn-primary" (click)="saveEndpoint()">Save endpoint</button><button type="button" class="btn-secondary" (click)="cancelEndpointEdit()">Cancel endpoint edit</button></div>
       </section>
     }
@@ -90,7 +93,7 @@
       <div class="page-head"><div><h4>Global scopes</h4><p class="help">APPLICATION and GLOBAL quotas apply across matching traffic.</p></div></div>
       <label class="field">Global rules Redis failure mode
         <select name="global-failure" [ngModel]="globalFailureMode()" (ngModelChange)="globalFailureMode.set($event)">
-          <option value="">Inherit global default</option><option value="FAIL_OPEN">FAIL_OPEN</option><option value="FAIL_CLOSED">FAIL_CLOSED</option>
+          <option value="">Inherit global default</option><option value="FAIL_OPEN">Fail open (allow)</option><option value="FAIL_CLOSED">Fail closed (503)</option>
         </select>
       </label>
       @for (rule of globalRules(); track rule.scope; let i = $index) {
@@ -116,7 +119,7 @@
         @case ('LEAKY_BUCKET') { <label class="field">Drain rate<input type="number" min="1" [name]="'drain-' + global + '-' + index" [ngModel]="rule.drainRate" (ngModelChange)="updateRule(index, { drainRate: $event }, global)" /></label><label class="field">Queue capacity<input type="number" min="1" [name]="'queue-' + global + '-' + index" [ngModel]="rule.queueCapacity" (ngModelChange)="updateRule(index, { queueCapacity: $event }, global)" /></label> }
         @case ('CONCURRENCY_LIMIT') { <label class="field">Max concurrent<input type="number" min="1" [name]="'max-concurrent-' + global + '-' + index" [ngModel]="rule.maxConcurrent" (ngModelChange)="updateRule(index, { maxConcurrent: $event }, global)" /></label><label class="field">Lease duration (ISO-8601)<input [name]="'lease-' + global + '-' + index" [ngModel]="rule.leaseDuration" (ngModelChange)="updateRule(index, { leaseDuration: $event }, global)" placeholder="PT30S" /></label> }
       }
-      <label class="field">Rule Redis failure mode<select [name]="'failure-' + global + '-' + index" [ngModel]="rule.onRedisError ?? ''" (ngModelChange)="updateRule(index, { onRedisError: $event || null }, global)"><option value="">Inherit</option><option value="FAIL_OPEN">FAIL_OPEN</option><option value="FAIL_CLOSED">FAIL_CLOSED</option></select></label>
+      <label class="field">Rule Redis failure mode<select [name]="'failure-' + global + '-' + index" [ngModel]="rule.onRedisError ?? ''" (ngModelChange)="updateRule(index, { onRedisError: $event || null }, global)"><option value="">Inherit</option><option value="FAIL_OPEN">Fail open (allow)</option><option value="FAIL_CLOSED">Fail closed (503)</option></select></label>
     </ng-template>
 
     <footer class="modal-foot">

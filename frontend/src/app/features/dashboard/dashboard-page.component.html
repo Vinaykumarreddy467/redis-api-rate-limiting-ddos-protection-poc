@@ -96,7 +96,12 @@
         } @else {
           @for (policy of policies(); track policy.id) {
             <tr>
-              <td class="mono">{{ policy.id }}</td>
+              <td class="mono" [attr.title]="policy.id">
+                {{ policy.source === 'GROUP' || policy.source === 'GLOBAL' ? policy.name : policy.id }}
+                @if (policy.source === 'GROUP' || policy.source === 'GLOBAL') {
+                  <span class="pill">{{ policy.source === 'GROUP' ? 'group' : 'global' }}</span>
+                }
+              </td>
               <td class="mono">{{ policy.path ?? '(every route)' }}</td>
               <td>{{ policy.method }}</td>
               <td>{{ policy.algorithm }}</td>

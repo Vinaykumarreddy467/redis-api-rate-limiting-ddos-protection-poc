@@ -23,6 +23,7 @@ const FIELD_PREVIEW = 3;
 export class AuditPageComponent {
   protected readonly store = inject(AdminStore);
   protected readonly limits = AUDIT_LIMITS;
+  protected readonly pageSize = PAGE_SIZE;
 
   protected readonly page = signal(0);
   protected readonly expanded = signal<Set<string>>(new Set());

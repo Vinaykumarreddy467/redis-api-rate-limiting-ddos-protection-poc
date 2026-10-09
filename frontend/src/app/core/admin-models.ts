@@ -23,6 +23,8 @@ export interface AdminPolicy {
   updatedAt: string;
   updatedBy: string | null;
   parameterSummary: string;
+  /** Where the policy is owned: a standalone document, a policy group rule, or a global scope rule. */
+  source?: 'POLICY' | 'GROUP' | 'GLOBAL';
 }
 
 /** Body for create and update. Version carries the value the editor read. */

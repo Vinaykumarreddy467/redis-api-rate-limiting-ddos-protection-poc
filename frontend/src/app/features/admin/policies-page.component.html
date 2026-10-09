@@ -138,7 +138,13 @@
         @for (policy of filtered(); track policy.id) {
           <tr>
             <td data-label="Policy">
-              <code>{{ policy.id }}</code>
+              @if (policy.source === 'GROUP' || policy.source === 'GLOBAL') {
+                <strong>{{ policy.name }}</strong>
+                <span class="chip">{{ policy.source === 'GROUP' ? 'group rule' : 'global rule' }}</span>
+                <br /><code [attr.title]="policy.id">{{ policy.id.slice(0, 10) }}…</code>
+              } @else {
+                <code>{{ policy.id }}</code>
+              }
             </td>
             <td data-label="Route"><code>{{ policy.method }} {{ policy.path ?? '(global)' }}</code></td>
             <td data-label="Algorithm">{{ policy.algorithm }}</td>

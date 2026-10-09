@@ -20,7 +20,7 @@
         apply are resolved by the limiter itself.
       </p>
     }
-    <button type="button" class="secondary" (click)="refresh()" [disabled]="running() || loading()">
+    <button type="button" class="btn-secondary" (click)="refresh()" [disabled]="running() || loading()">
       Refresh targets
     </button>
   </div>
@@ -54,7 +54,7 @@
     }
   </div>
 
-  @if (target(); as selected) {
+  @if (mode() === 'legacy' && target(); as selected) {
     <div class="route-detail">
       <p class="route-note" role="note">{{ selected.note }}</p>
       @if (selected.enabled && selected.testable) {
@@ -99,6 +99,34 @@
           Exempted by {{ exemptions().join(', ') }}: requests to this target bypass every policy above,
           so no limit will be enforced.
         </p>
+      }
+    </div>
+  }
+
+  @if (mode() === 'groups' && selectedGroupEndpoint(); as endpoint) {
+    <div class="route-detail">
+      <p class="route-note" role="note">{{ endpoint.note }}</p>
+      @if (!endpoint.exempt) {
+        @if (groupEndpointPolicies().length === 0) {
+          <p class="empty">
+            No enabled policy is configured for exactly <code>{{ endpoint.method }} {{ endpoint.path }}</code>.
+            Global or group-wide rules may still apply.
+          </p>
+        } @else {
+          <p class="help">
+            {{ groupEndpointPolicies().length }} polic{{ groupEndpointPolicies().length === 1 ? 'y is' : 'ies are' }}
+            configured for <code>{{ endpoint.method }} {{ endpoint.path }}</code> and each one must allow a request.
+          </p>
+          <ul class="policy-list">
+            @for (policy of groupEndpointPolicies(); track policy.id) {
+              <li>
+                <strong>{{ policy.name }}</strong>
+                <span class="policy-meta">{{ policy.algorithm }} &middot; {{ policy.scope }}</span>
+                <span class="policy-params">{{ policy.parameterSummary }}</span>
+              </li>
+            }
+          </ul>
+        }
       }
     </div>
   }
@@ -188,9 +216,13 @@
       <button type="submit" class="primary" [disabled]="running() || !route() || (mode() === 'legacy' && !target()?.testable)">
         {{ running() ? 'Running…' : 'Start demo' }}
       </button>
-      <button type="button" (click)="onCancel()" [disabled]="!running()">Cancel</button>
+      <button type="button" class="btn-secondary" (click)="onCancel()" [disabled]="!running()">Cancel</button>
     </div>
   </form>
+
+  @if (groupRunBlockReason(); as reason) {
+    <p class="alert alert-warn" role="status">{{ reason }}</p>
+  }
 
   @if (formError(); as message) {
     <p class="form-error" role="alert">{{ message }}</p>

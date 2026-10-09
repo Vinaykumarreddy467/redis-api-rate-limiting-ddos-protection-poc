@@ -24,7 +24,7 @@
       </select>
     </label>
     <p class="count" role="status">
-      {{ store.audit().length }} records loaded, {{ page() + 1 }} of {{ pageCount() }} pages
+      {{ store.audit().length }} records loaded, {{ page() + 1 }} of {{ pageCount() }} pages ({{ pageSize }} per page)
     </p>
     <div class="row">
       <button type="button" class="btn-secondary" (click)="previousPage()" [disabled]="page() === 0">

@@ -115,7 +115,34 @@ export class RequestDemoComponent {
   /** Every policy the limiter charges for the selected request, including the selected one. */
   readonly enforcedWith = computed(() => this.target()?.enforcedWith ?? []);
   readonly exemptions = computed(() => this.target()?.exemptions ?? []);
-  readonly needsAuth = computed(() => this.target()?.requiresCredentials ?? false);
+  readonly needsAuth = computed(() =>
+    this.mode() === 'groups'
+      ? this.selectedGroupEndpoint()?.requiresCredentials ?? false
+      : this.target()?.requiresCredentials ?? false);
+
+  /**
+   * Why the selected group endpoint cannot be run, or null when it can. The Start button is disabled
+   * in these cases, so the reason must be visible next to it instead of leaving a silent dead button.
+   */
+  readonly groupRunBlockReason = computed<string | null>(() => {
+    if (this.mode() !== 'groups') return null;
+    const endpoint = this.selectedGroupEndpoint();
+    if (!endpoint) return 'This group has no endpoint to test.';
+    if (!endpoint.enabled) return 'This group is disabled, so its rules are not enforced and there is nothing to demonstrate.';
+    if (endpoint.exempt) return 'This endpoint is exempt from all rate limits, so a demo run would never be limited.';
+    if (!endpoint.path.startsWith('/api/')) {
+      return `The demo console only sends requests to this POC's /api/ routes; ${endpoint.path} is outside that, so it cannot be run from here.`;
+    }
+    return null;
+  });
+
+  /** Enabled policies configured for exactly the selected group endpoint's method and path. */
+  readonly groupEndpointPolicies = computed(() => {
+    const endpoint = this.selectedGroupEndpoint();
+    if (!endpoint) return [];
+    return this.store.policies().filter((policy) =>
+      policy.enabled && policy.method === endpoint.method && policy.path === endpoint.path);
+  });
 
   readonly route = computed<DemoRoute | null>(() => {
     if (this.mode() === 'groups') {
@@ -195,8 +222,11 @@ export class RequestDemoComponent {
 
     const target = this.target();
     const route = this.route();
-    if (!target || !route) {
-      this.formError.set(target?.reason || 'Select a policy that can be tested automatically.');
+    // Groups mode runs a group endpoint and never needs the legacy catalogue's target.
+    if (!route || (this.mode() === 'legacy' && !target)) {
+      this.formError.set(this.mode() === 'groups'
+        ? this.groupRunBlockReason() ?? 'Select an endpoint that can be tested automatically.'
+        : target?.reason || 'Select a policy that can be tested automatically.');
       return Promise.resolve(null);
     }
     let credentials: { username: string; password: string } | null = null;
@@ -218,7 +248,7 @@ export class RequestDemoComponent {
     if (this.mode() === 'groups') {
       const endpoint = this.selectedGroupEndpoint();
       this.lastRunLabel.set(`${endpoint?.groupName} — ${endpoint?.displayName} (${endpoint?.method} ${endpoint?.path})`);
-    } else {
+    } else if (target) {
       this.lastRunLabel.set(`${targetLabel(target)} (${target.method} ${requestUrl(target)})`);
     }
 
