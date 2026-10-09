@@ -170,6 +170,79 @@ class PolicyAdminControllerTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void switchingAlgorithmDropsParametersOfTheOldAlgorithm() {
+        var url = "/api/admin/rate-limit/policies/products-read";
+        var current = rest.exchange(url, HttpMethod.GET, new HttpEntity<>(admin()), Map.class).getBody();
+        long version = ((Number) current.get("version")).longValue();
+
+        var toBucket = new java.util.HashMap<String, Object>(Map.of(
+                "algorithm", "TOKEN_BUCKET", "capacity", 100, "refillInterval", "PT10S",
+                "version", version));
+        var bucket = rest.exchange(url, HttpMethod.PUT, new HttpEntity<>(toBucket, admin()), Map.class);
+        assertThat(bucket.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(bucket.getBody().get("limit")).as("window fields do not belong to a token bucket").isNull();
+        assertThat(bucket.getBody().get("window")).isNull();
+
+        var toWindow = new java.util.HashMap<String, Object>(Map.of(
+                "algorithm", "FIXED_WINDOW", "limit", 30, "window", "PT1M",
+                "version", ((Number) bucket.getBody().get("version")).longValue()));
+        var window = rest.exchange(url, HttpMethod.PUT, new HttpEntity<>(toWindow, admin()), Map.class);
+        assertThat(window.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(window.getBody().get("limit")).isEqualTo(30);
+        assertThat(window.getBody().get("capacity")).as("stale bucket value must not survive").isNull();
+        assertThat(window.getBody().get("refillInterval")).isNull();
+        assertThat(window.getBody().get("cost")).isNull();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void malformedRuleValuesAreRejectedAsValidationErrorsNotServerErrors() {
+        for (var bad : java.util.List.of(
+                Map.<String, Object>of("scope", "IP", "algorithm", "FIXED_WINDOW", "window", "60s", "limit", 5),
+                Map.<String, Object>of("scope", "IP", "algorithm", "NOT_AN_ALGORITHM", "window", "PT1M", "limit", 5),
+                Map.<String, Object>of("scope", "BOGUS", "algorithm", "FIXED_WINDOW", "window", "PT1M", "limit", 5),
+                Map.<String, Object>of("algorithm", "FIXED_WINDOW", "window", "PT1M", "limit", 5))) {
+            var endpoint = Map.of("id", "ep-bad", "method", "GET", "path", "/api/bad",
+                    "displayName", "Bad", "repeatable", true, "exempt", false,
+                    "scopeRules", java.util.List.of(bad));
+            var group = Map.of("id", "bad-group", "name", "Bad", "enabled", true,
+                    "endpoints", java.util.List.of(endpoint));
+            var response = rest.exchange("/api/admin/rate-limit/groups", HttpMethod.POST,
+                    new HttpEntity<>(group, admin()), Map.class);
+            assertThat(response.getStatusCode()).as("rule %s", bad).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat((java.util.List<String>) response.getBody().get("problems")).isNotEmpty();
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void policyListLabelsWhereEachPolicyIsOwned() {
+        var endpoint = Map.of("id", "ep-owned", "method", "GET", "path", "/api/owned",
+                "displayName", "Owned endpoint", "repeatable", true, "exempt", false,
+                "scopeRules", java.util.List.of(Map.of("scope", "IP", "algorithm", "FIXED_WINDOW",
+                        "window", "PT1M", "limit", 5)));
+        var group = Map.of("id", "owner-group", "name", "Owner group", "enabled", true,
+                "endpoints", java.util.List.of(endpoint));
+        var created = rest.exchange("/api/admin/rate-limit/groups", HttpMethod.POST,
+                new HttpEntity<>(group, admin()), String.class);
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+
+        var list = rest.exchange("/api/admin/rate-limit/policies", HttpMethod.GET,
+                new HttpEntity<>(admin()), java.util.List.class).getBody();
+        var rows = (java.util.List<Map<String, Object>>) list;
+        assertThat(rows).anySatisfy(r -> {
+            assertThat(r.get("id")).isEqualTo("products-read");
+            assertThat(r.get("source")).isEqualTo("POLICY");
+        });
+        assertThat(rows).anySatisfy(r -> {
+            assertThat((String) r.get("id")).startsWith("p-");
+            assertThat(r.get("name")).isEqualTo("Owner group - Owned endpoint");
+            assertThat(r.get("source")).isEqualTo("GROUP");
+        });
+    }
+
+    @Test
     void legacyProjectionOperationsUpdateTheOwningGroupWithoutDroppingSiblingRules() {
         var endpointRules = java.util.List.of(
                 Map.of("scope", "ENDPOINT", "algorithm", "FIXED_WINDOW", "window", "PT1M", "limit", 10),

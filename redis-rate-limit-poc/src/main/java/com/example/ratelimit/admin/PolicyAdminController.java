@@ -82,11 +82,12 @@ public class PolicyAdminController {
         var groups = store.findAllGroups();
         for (var group : groups) {
             for (var policy : projectionService.projectGroup(group)) {
-                byId.put(policy.id(), PolicyResponse.from(policy));
+                byId.put(policy.id(), PolicyResponse.from(policy, PolicyResponse.SOURCE_GROUP));
             }
         }
         store.findGlobalRules().ifPresent(rules -> projectionService.projectGlobalRules(rules)
-                .forEach(policy -> byId.put(policy.id(), PolicyResponse.from(policy))));
+                .forEach(policy -> byId.put(policy.id(),
+                        PolicyResponse.from(policy, PolicyResponse.SOURCE_GLOBAL))));
         return List.copyOf(byId.values());
     }
 
@@ -514,13 +515,7 @@ public class PolicyAdminController {
             var endpointId = ep.id() != null ? ep.id() : UUID.randomUUID().toString();
             var rules = new ArrayList<ScopeRule>();
             for (var rule : ep.scopeRules()) {
-                rules.add(new ScopeRule(Scope.valueOf(rule.scope().toUpperCase()), Algorithm.valueOf(rule.algorithm().toUpperCase()),
-                        rule.window() != null ? java.time.Duration.parse(rule.window()) : null, rule.limit(),
-                        rule.capacity(), rule.refillInterval() != null ? java.time.Duration.parse(rule.refillInterval()) : null,
-                        rule.cost(), rule.drainRate(),
-                        rule.queueCapacity(), rule.maxConcurrent(),
-                        rule.leaseDuration() != null ? java.time.Duration.parse(rule.leaseDuration()) : null,
-                        rule.onRedisError() != null ? FailureMode.valueOf(rule.onRedisError()) : null));
+                rules.add(toScopeRule(rule));
             }
             endpoints.add(new EndpointRule(endpointId, ep.method(), ep.path(), ep.displayName(),
                     ep.repeatable(), ep.exempt(), rules));
@@ -548,13 +543,7 @@ public class PolicyAdminController {
             var endpointId = ep.id() != null ? ep.id() : UUID.randomUUID().toString();
             var rules = new ArrayList<ScopeRule>();
             for (var rule : ep.scopeRules()) {
-                rules.add(new ScopeRule(Scope.valueOf(rule.scope().toUpperCase()), Algorithm.valueOf(rule.algorithm().toUpperCase()),
-                        rule.window() != null ? java.time.Duration.parse(rule.window()) : null, rule.limit(),
-                        rule.capacity(), rule.refillInterval() != null ? java.time.Duration.parse(rule.refillInterval()) : null,
-                        rule.cost(), rule.drainRate(),
-                        rule.queueCapacity(), rule.maxConcurrent(),
-                        rule.leaseDuration() != null ? java.time.Duration.parse(rule.leaseDuration()) : null,
-                        rule.onRedisError() != null ? FailureMode.valueOf(rule.onRedisError()) : null));
+                rules.add(toScopeRule(rule));
             }
             endpoints.add(new EndpointRule(endpointId, ep.method(), ep.path(), ep.displayName(),
                     ep.repeatable(), ep.exempt(), rules));
@@ -628,13 +617,7 @@ public class PolicyAdminController {
         }
         var rules = new ArrayList<ScopeRule>();
         for (var rule : request.rules()) {
-            rules.add(new ScopeRule(Scope.valueOf(rule.scope().toUpperCase()), Algorithm.valueOf(rule.algorithm().toUpperCase()),
-                    rule.window() != null ? java.time.Duration.parse(rule.window()) : null, rule.limit(),
-                    rule.capacity(), rule.refillInterval() != null ? java.time.Duration.parse(rule.refillInterval()) : null,
-                    rule.cost(), rule.drainRate(),
-                    rule.queueCapacity(), rule.maxConcurrent(),
-                    rule.leaseDuration() != null ? java.time.Duration.parse(rule.leaseDuration()) : null,
-                    rule.onRedisError() != null ? FailureMode.valueOf(rule.onRedisError()) : null));
+            rules.add(toScopeRule(rule));
         }
         var updated = existing != null ? new GlobalScopeRules(rules,
                 request.onRedisError() != null ? request.onRedisError() : existing.onRedisError(),
@@ -700,6 +683,51 @@ public class PolicyAdminController {
                 pick(request.cost(), rule.cost()), pick(request.drainRate(), rule.drainRate()),
                 pick(request.queueCapacity(), rule.queueCapacity()), pick(request.maxConcurrent(), rule.maxConcurrent()),
                 pick(request.leaseDuration(), rule.leaseDuration()), pick(request.onRedisError(), rule.onRedisError()));
+    }
+
+    /**
+     * Builds a rule from a request body. A missing or unknown scope, algorithm or failure mode, and a
+     * duration that is not ISO-8601 (for example "60s" instead of "PT60S"), are reported together as a
+     * validation error instead of escaping as an unhandled exception and an HTTP 500.
+     */
+    private static ScopeRule toScopeRule(ScopeRuleRequest rule) {
+        var problems = new ArrayList<String>();
+        Scope scope = parseEnum(Scope.class, rule.scope(), "scope", true, problems);
+        Algorithm algorithm = parseEnum(Algorithm.class, rule.algorithm(), "algorithm", true, problems);
+        FailureMode failureMode = parseEnum(FailureMode.class, rule.onRedisError(), "onRedisError", false, problems);
+        var window = parseDuration(rule.window(), "window", problems);
+        var refillInterval = parseDuration(rule.refillInterval(), "refillInterval", problems);
+        var leaseDuration = parseDuration(rule.leaseDuration(), "leaseDuration", problems);
+        if (!problems.isEmpty()) {
+            throw new PolicyValidationException(problems);
+        }
+        return new ScopeRule(scope, algorithm, window, rule.limit(), rule.capacity(), refillInterval,
+                rule.cost(), rule.drainRate(), rule.queueCapacity(), rule.maxConcurrent(), leaseDuration,
+                failureMode);
+    }
+
+    private static <E extends Enum<E>> E parseEnum(Class<E> type, String value, String field, boolean required,
+            List<String> problems) {
+        if (value == null || value.isBlank()) {
+            if (required) problems.add(field + " is required");
+            return null;
+        }
+        try {
+            return Enum.valueOf(type, value.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            problems.add(field + " must be one of " + java.util.Arrays.toString(type.getEnumConstants()));
+            return null;
+        }
+    }
+
+    private static java.time.Duration parseDuration(String value, String field, List<String> problems) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            return java.time.Duration.parse(value.trim());
+        } catch (java.time.format.DateTimeParseException e) {
+            problems.add(field + " must be an ISO-8601 duration such as PT1M, PT30S or PT1H");
+            return null;
+        }
     }
 
     private record ProjectionTarget(PolicyGroup group, EndpointRule endpoint, Scope scope) { }
@@ -781,21 +809,33 @@ public class PolicyAdminController {
      */
     private static PolicyDocument toDocument(PolicyRequest request, PolicyDocument existing, String actor) {
         Instant now = Instant.now();
+        Algorithm algorithm = pick(request.algorithm(), existing == null ? null : existing.algorithm());
+        // Only parameters that belong to the chosen algorithm survive. Without this, switching an
+        // existing policy's algorithm kept the old algorithm's values alongside the new ones.
+        boolean windowed = algorithm == Algorithm.FIXED_WINDOW || algorithm == Algorithm.SLIDING_WINDOW
+                || algorithm == Algorithm.SLIDING_WINDOW_COUNTER;
+        boolean tokenBucket = algorithm == Algorithm.TOKEN_BUCKET;
+        boolean leakyBucket = algorithm == Algorithm.LEAKY_BUCKET;
+        boolean concurrency = algorithm == Algorithm.CONCURRENCY_LIMIT;
         var b = PolicyDocument.builder(pick(request.id(), existing == null ? null : existing.id()))
                 .name(pick(request.name(), existing == null ? null : existing.name()))
                 .route(pick(request.method(), existing == null ? null : existing.method()),
                         pick(request.path(), existing == null ? null : existing.path()))
-                .algorithm(pick(request.algorithm(), existing == null ? null : existing.algorithm()))
+                .algorithm(algorithm)
                 .scope(pick(request.scope(), existing == null ? null : existing.scope()))
-                .window(pick(request.window(), existing == null ? null : existing.window()),
-                        pick(request.limit(), existing == null ? null : existing.limit()))
-                .bucket(pick(request.capacity(), existing == null ? null : existing.capacity()),
-                        pick(request.refillInterval(), existing == null ? null : existing.refillInterval()),
-                        pick(request.cost(), existing == null ? null : existing.cost()))
-                .leaky(pick(request.drainRate(), existing == null ? null : existing.drainRate()),
-                        pick(request.queueCapacity(), existing == null ? null : existing.queueCapacity()))
-                .concurrency(pick(request.maxConcurrent(), existing == null ? null : existing.maxConcurrent()),
-                        pick(request.leaseDuration(), existing == null ? null : existing.leaseDuration()))
+                .window(windowed ? pick(request.window(), existing == null ? null : existing.window()) : null,
+                        windowed ? pick(request.limit(), existing == null ? null : existing.limit()) : null)
+                .bucket(tokenBucket ? pick(request.capacity(), existing == null ? null : existing.capacity()) : null,
+                        tokenBucket ? pick(request.refillInterval(),
+                                existing == null ? null : existing.refillInterval()) : null,
+                        tokenBucket ? pick(request.cost(), existing == null ? null : existing.cost()) : null)
+                .leaky(leakyBucket ? pick(request.drainRate(), existing == null ? null : existing.drainRate()) : null,
+                        leakyBucket ? pick(request.queueCapacity(),
+                                existing == null ? null : existing.queueCapacity()) : null)
+                .concurrency(concurrency ? pick(request.maxConcurrent(),
+                                existing == null ? null : existing.maxConcurrent()) : null,
+                        concurrency ? pick(request.leaseDuration(),
+                                existing == null ? null : existing.leaseDuration()) : null)
                 .onRedisError(pick(request.onRedisError(), existing == null ? null : existing.onRedisError()))
                 // The request carries the version the client read; the stored version becomes base + 1.
                 // The store's Lua then requires stored == base, which is the optimistic-concurrency check.
