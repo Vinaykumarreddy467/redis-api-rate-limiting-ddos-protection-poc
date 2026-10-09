@@ -1,152 +1,59 @@
+<#
+  stop-project.ps1 - stop the RateGuard POC on Windows.
+
+  Stops this project's Angular dev server and Spring Boot backend, then its Redis container.
+  Redis data is never deleted (the container is only stopped). Use -KeepRedis to leave Redis running.
+  Idempotent, and never touches processes or containers that do not belong to this project.
+#>
+param(
+    [switch] $KeepRedis
+)
+
 $ErrorActionPreference = 'Continue'
+. (Join-Path $PSScriptRoot 'project-common.ps1')
 
-$root = Split-Path -Parent $PSScriptRoot
-$stateDir = Join-Path $root '.run-state'
-$backendDir = Join-Path $root 'redis-rate-limit-poc'
-$frontendDir = Join-Path $root 'frontend'
-$errors = 0
-
-function Stop-TrackedProcess([string] $name, [string] $expectedProcessName) {
-    $recordPath = Join-Path $stateDir "$name.json"
-    if (-not (Test-Path -LiteralPath $recordPath)) {
-        $windowTitle = if ($name -eq 'backend') { 'RateGuard API :8080*' } else { 'RateGuard Console :4200*' }
-        & taskkill.exe /FI "WINDOWTITLE eq $windowTitle" /T /F *> $null
-        $legacyWindowStopped = $LASTEXITCODE -eq 0
-        if ($legacyWindowStopped) {
-            Write-Host "  Stopped legacy $name window '$windowTitle'." -ForegroundColor Green
-        }
-
-        $port = if ($name -eq 'backend') { 8080 } else { 4200 }
-        $owners = @()
-        for ($i = 0; $i -lt 10; $i++) {
-            $owners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
-                Select-Object -ExpandProperty OwningProcess -Unique)
-            if ($owners.Count -eq 0) { break }
-            Start-Sleep -Seconds 1
-        }
-        if (-not $owners) {
-            if (-not $legacyWindowStopped) {
-                Write-Host "  ${name}: no process started by the current or previous start.bat was found."
-            }
-            return
-        }
-
-        foreach ($ownerPid in $owners) {
-            try {
-                $owner = Get-Process -Id $ownerPid -ErrorAction Stop
-            } catch {
-                Write-Host "  Port $port is owned by PID $ownerPid, but its process details are unavailable; leaving it untouched." -ForegroundColor Yellow
-                continue
-            }
-            if ($owner.ProcessName -ne $expectedProcessName) {
-                Write-Host "  Port $port is owned by $($owner.ProcessName) PID $ownerPid, not the expected $expectedProcessName process; leaving it untouched." -ForegroundColor Yellow
-                continue
-            }
-
-            Write-Host "  Untracked $expectedProcessName PID $ownerPid owns project port $port." -ForegroundColor Yellow
-            Write-Host "  Executable: $($owner.Path)"
-            $answer = Read-Host "  Stop this process tree? Enter Y only if this is the RateGuard service"
-            if ($answer -match '^(y|yes)$') {
-                & taskkill.exe /PID $ownerPid /T /F *> $null
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Host "  Stopped confirmed $name process PID $ownerPid." -ForegroundColor Green
-                } else {
-                    Write-Host "  Could not stop PID $ownerPid." -ForegroundColor Red
-                    $script:errors++
-                }
-            } else {
-                Write-Host "  Left PID $ownerPid running."
-            }
-        }
-        return
-    }
-
-    try {
-        $record = Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json
-        $process = Get-Process -Id ([int]$record.pid) -ErrorAction Stop
-        $actualStart = $process.StartTime.ToUniversalTime()
-        $recordedStart = [DateTime]::Parse($record.startTimeUtc).ToUniversalTime()
-        if ($process.ProcessName -ne $expectedProcessName -or
-            [Math]::Abs(($actualStart - $recordedStart).TotalSeconds) -gt 2) {
-            Write-Host "  ${name}: recorded PID no longer identifies the process this project started; leaving it alone." -ForegroundColor Yellow
-            Remove-Item -LiteralPath $recordPath -Force
-            return
-        }
-
-        & taskkill.exe /PID $process.Id /T /F *> $null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "  Stopped $name (PID $($process.Id))." -ForegroundColor Green
-        } else {
-            Write-Host "  Could not stop $name (PID $($process.Id))." -ForegroundColor Red
-            $script:errors++
-        }
-    } catch {
-        Write-Host "  $name is already stopped."
-    } finally {
-        Remove-Item -LiteralPath $recordPath -Force -ErrorAction SilentlyContinue
-    }
-}
-
+$problems = 0
 Write-Host ''
 Write-Host 'RateGuard - stopping project services' -ForegroundColor Cyan
-Stop-TrackedProcess 'frontend' 'node'
-Stop-TrackedProcess 'backend' 'java'
 
-$redisState = Join-Path $stateDir 'redis.txt'
-if (Test-Path -LiteralPath $redisState) {
-    $redisName = (Get-Content -LiteralPath $redisState -Raw).Trim()
-    if ($redisName -match '^ratelimit-(redis|poc-redis)$') {
-        docker inspect $redisName *> $null
-        if ($LASTEXITCODE -eq 0) {
-            $running = docker inspect -f '{{.State.Running}}' $redisName
-            if ($LASTEXITCODE -eq 0 -and $running -eq 'true') {
-                docker stop $redisName *> $null
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Host "  Stopped Redis container '$redisName'; container and stored data were retained." -ForegroundColor Green
-                } else {
-                    Write-Host "  Could not stop Redis container '$redisName'." -ForegroundColor Red
-                    $errors++
-                }
-            } else {
-                Write-Host "  Redis container '$redisName' is already stopped."
-            }
-        } else {
-            Write-Host "  Redis container '$redisName' no longer exists."
-        }
+Write-Step '[1/3] Angular console'
+if (-not (Stop-ProjectService 'frontend' 'node' $FrontendPort)) { $problems++ }
+
+Write-Step '[2/3] Backend'
+if (-not (Stop-ProjectService 'backend' 'java' $BackendPort)) { $problems++ }
+
+Write-Step '[3/3] Redis'
+$redisState = Join-Path $StateDir 'redis.txt'
+if ($KeepRedis) {
+    Write-Ok 'Left Redis running (-KeepRedis).'
+} elseif (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    Write-Note 'Docker is not on PATH; Redis was not checked.'
+} else {
+    & docker info *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Note 'Docker is not running, so Redis is already down.'
     } else {
-        Write-Host '  Redis state file had an unexpected container name; left Docker containers untouched.' -ForegroundColor Yellow
-        $errors++
+        $redisName = Find-RedisContainer
+        if ($null -eq $redisName) {
+            Write-Ok 'No project Redis container exists.'
+        } else {
+            $running = & docker inspect -f '{{.State.Running}}' $redisName 2>$null
+            if ($running -eq 'true') {
+                & docker stop $redisName *> $null
+                if ($LASTEXITCODE -eq 0) { Write-Ok "Stopped Redis container '$redisName' (data kept)." }
+                else { Write-Fail "Could not stop Redis container '$redisName'."; $problems++ }
+            } else {
+                Write-Ok "Redis container '$redisName' is already stopped."
+            }
+        }
     }
     Remove-Item -LiteralPath $redisState -Force -ErrorAction SilentlyContinue
-} else {
-    # Backward compatibility for the previous start.bat, which did not write ownership records.
-    # These two names are specific to this project; stopping retains the container and its data.
-    foreach ($candidate in @('ratelimit-redis', 'ratelimit-poc-redis')) {
-        docker inspect $candidate *> $null
-        if ($LASTEXITCODE -eq 0) {
-            $running = docker inspect -f '{{.State.Running}}' $candidate
-            if ($LASTEXITCODE -eq 0 -and $running -eq 'true') {
-                docker stop $candidate *> $null
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Host "  Stopped legacy project Redis '$candidate'; data retained." -ForegroundColor Green
-                } else {
-                    Write-Host "  Could not stop Redis container '$candidate'." -ForegroundColor Red
-                    $errors++
-                }
-            }
-        }
-    }
-}
-
-if (Test-Path -LiteralPath $stateDir) {
-    $remaining = @(Get-ChildItem -LiteralPath $stateDir -Force -ErrorAction SilentlyContinue)
-    if ($remaining.Count -eq 0) { Remove-Item -LiteralPath $stateDir -Force -ErrorAction SilentlyContinue }
 }
 
 Write-Host ''
-if ($errors -eq 0) {
+if ($problems -eq 0) {
     Write-Host 'RateGuard stopped. Redis data was not deleted.' -ForegroundColor Green
     exit 0
 }
-Write-Host 'RateGuard stop completed with errors; review the messages above.' -ForegroundColor Yellow
+Write-Host 'RateGuard stop finished with problems; see the messages above.' -ForegroundColor Yellow
 exit 1

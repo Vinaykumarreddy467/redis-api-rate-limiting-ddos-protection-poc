@@ -1,12 +1,11 @@
 @echo off
-setlocal
-set "ROOT=%~dp0"
-
-where powershell.exe >nul 2>&1
-if errorlevel 1 (
-  echo ERROR: Windows PowerShell is required.
-  exit /b 1
-)
-
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\stop-project.ps1"
-exit /b %ERRORLEVEL%
+setlocal EnableExtensions
+rem ---------------------------------------------------------------------------
+rem  stop.bat - stop RateGuard: Angular console, backend, then the Redis container.
+rem  Redis data is never deleted. Use  stop.bat -KeepRedis  to leave Redis running.
+rem  Only processes and containers belonging to this project are touched.
+rem ---------------------------------------------------------------------------
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\stop-project.ps1" %*
+set "CODE=%ERRORLEVEL%"
+if not "%CODE%"=="0" pause
+exit /b %CODE%
