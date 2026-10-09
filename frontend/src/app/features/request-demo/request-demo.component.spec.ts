@@ -752,6 +752,64 @@ describe('RequestDemoComponent', () => {
     expect(details?.textContent).toContain('HTTP 200');
   });
 
+  it('keeps every response in one scrollable side panel with expand, collapse and a filter', async () => {
+    await loadGroups([
+      policyGroup({
+        id: 'group-1',
+        name: 'Products API',
+        endpoints: [endpointRule({ id: 'ep-1', method: 'GET', path: '/api/products', displayName: 'Products Read' })],
+      }),
+    ]);
+    await setMode('groups');
+    await setCount(2);
+    const root = fixture.nativeElement as HTMLElement;
+    const groupSelect = root.querySelector<HTMLSelectElement>('select[name="group"]')!;
+    groupSelect.value = 'group-1';
+    groupSelect.dispatchEvent(new Event('change'));
+    await settle();
+    const endpointSelect = root.querySelector<HTMLSelectElement>('select[name="endpoint"]')!;
+    endpointSelect.value = 'ep-1';
+    endpointSelect.dispatchEvent(new Event('change'));
+    await settle();
+
+    const run = fixture.componentInstance.onStart();
+    await settle();
+    http.expectOne('/api/products').flush({ ok: true });
+    await settle();
+    http.expectOne('/api/products').flush({ message: 'slow down' }, { status: 429, statusText: 'Too Many Requests' });
+    await settle();
+    await run;
+    await settle();
+
+    const panel = root.querySelector('aside.responses-panel')!;
+    expect(panel).not.toBeNull();
+    expect(panel.querySelector('.responses-scroll')?.getAttribute('tabindex')).toBe('0');
+    expect(panel.querySelectorAll('details.response-entry')).toHaveLength(2);
+    expect(panel.querySelector('.responses-summary')?.textContent).toContain('1 successful');
+    expect(panel.querySelector('.responses-summary')?.textContent).toContain('1 rejected');
+
+    const button = (label: string) => Array.from(panel.querySelectorAll('button'))
+      .find((b) => b.textContent?.trim() === label)!;
+    const open = () => Array.from(panel.querySelectorAll<HTMLDetailsElement>('details.response-entry'))
+      .map((d) => d.open);
+
+    expect(open()).toEqual([false, false]);
+    button('Expand all').click();
+    await settle();
+    expect(open()).toEqual([true, true]);
+    button('Collapse all').click();
+    await settle();
+    expect(open()).toEqual([false, false]);
+
+    const filter = panel.querySelector<HTMLSelectElement>('select[name="response-filter"]')!;
+    filter.value = 'rejected';
+    filter.dispatchEvent(new Event('change'));
+    await settle();
+    const shown = panel.querySelectorAll('details.response-entry');
+    expect(shown).toHaveLength(1);
+    expect(shown[0].textContent).toContain('HTTP 429');
+  });
+
   it('response details can be expanded and collapsed', async () => {
     await loadGroups([
       policyGroup({

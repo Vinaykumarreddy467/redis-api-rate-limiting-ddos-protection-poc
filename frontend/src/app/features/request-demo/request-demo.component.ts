@@ -53,8 +53,44 @@ export class RequestDemoComponent {
     this.responseExpanded.update((map) => ({ ...map, [index]: !map[index] }));
   }
 
+  /**
+   * Records the element's real open state. Unlike {@link toggleResponse} it is idempotent, which matters
+   * because the browser also fires a toggle event when "Expand all" opens panels from code.
+   */
+  setResponseExpanded(index: number, open: boolean): void {
+    this.responseExpanded.update((map) => (map[index] === open ? map : { ...map, [index]: open }));
+  }
+
   isResponseExpanded(index: number): boolean {
     return this.responseExpanded()[index] ?? false;
+  }
+
+  readonly responseFilter = signal<'all' | 'ok' | 'rejected' | 'other'>('all');
+
+  private static kindOf(entry: ResponseEntry): 'ok' | 'rejected' | 'other' {
+    if (entry.status === 429) return 'rejected';
+    return entry.status >= 200 && entry.status < 300 ? 'ok' : 'other';
+  }
+
+  readonly responseCounts = computed(() => {
+    const counts = { ok: 0, rejected: 0, other: 0 };
+    for (const entry of this.responses()) counts[RequestDemoComponent.kindOf(entry)]++;
+    return counts;
+  });
+
+  readonly visibleResponses = computed(() => {
+    const filter = this.responseFilter();
+    return filter === 'all'
+      ? this.responses()
+      : this.responses().filter((entry) => RequestDemoComponent.kindOf(entry) === filter);
+  });
+
+  expandAll(): void {
+    this.responseExpanded.set(Object.fromEntries(this.visibleResponses().map((entry) => [entry.index, true])));
+  }
+
+  collapseAll(): void {
+    this.responseExpanded.set({});
   }
 
   /**

@@ -6,6 +6,8 @@
     being demonstrated.
   </p>
 
+  <div class="demo-layout" [class.has-responses]="responses().length > 0">
+  <div class="demo-main">
   @if (loadError(); as error) {
     <p class="alert alert-bad" role="alert">Policy targets could not be loaded: {{ error }}</p>
     <button type="button" class="primary" (click)="refresh()" [disabled]="running()">Retry targets</button>
@@ -311,43 +313,68 @@
     </div>
   }
 
+  </div>
+
   @if (responses().length > 0) {
-    <div class="responses-list">
-      <h3>All responses</h3>
-      @for (response of responses(); track response.index) {
-        <details class="response-entry" [open]="isResponseExpanded(response.index)" (toggle)="toggleResponse(response.index)">
-          <summary>
-            Request #{{ response.index }} — HTTP {{ response.status }}
-            @if (response.status === 429) { <span class="badge rejected">REJECTED</span> }
-            @else if (response.status >= 200 && response.status < 300) { <span class="badge success">OK</span> }
-            @else if (response.status === 404) { <span class="badge notfound">NOT FOUND</span> }
-            @else if (response.transportError) { <span class="badge error">ERROR</span> }
-          </summary>
-          <div class="response-detail">
-            <p><strong>Request:</strong> {{ lastRunLabel() }} (request #{{ response.index }})</p>
-            <p><strong>Status:</strong> HTTP {{ response.status }}</p>
-            @if (response.headers.retryAfter || response.headers.limit || response.headers.remaining || response.headers.policy) {
-              <dl class="rate-limit-headers">
-                @if (response.headers.retryAfter) { <div><dt>Retry-After</dt><dd>{{ response.headers.retryAfter }} s</dd></div> }
-                @if (response.headers.limit) { <div><dt>X-RateLimit-Limit</dt><dd>{{ response.headers.limit }}</dd></div> }
-                @if (response.headers.remaining) { <div><dt>X-RateLimit-Remaining</dt><dd>{{ response.headers.remaining }}</dd></div> }
-                @if (response.headers.policy) { <div><dt>X-RateLimit-Policy</dt><dd>{{ response.headers.policy }}</dd></div> }
-              </dl>
-            }
-            @if (response.message) {
-              <p><strong>Message:</strong> {{ response.message }}</p>
-            }
-            @if (response.transportError) {
-              <p class="transport-error"><strong>Transport error:</strong> {{ response.transportError }}</p>
-            }
-            @if (response.body !== null) {
-              <pre>{{ json(response.body) }}</pre>
-            } @else {
-              <p class="no-body">(no response body)</p>
-            }
-          </div>
-        </details>
-      }
-    </div>
+    <aside class="responses-panel" aria-labelledby="responses-heading">
+      <div class="responses-head">
+        <h3 id="responses-heading">All responses <span class="count-chip">{{ responses().length }}</span></h3>
+        <div class="responses-tools">
+          <label class="visually-hidden" for="response-filter">Show responses</label>
+          <select id="response-filter" name="response-filter" [ngModel]="responseFilter()"
+            (ngModelChange)="responseFilter.set($event)">
+            <option value="all">All</option>
+            <option value="ok">Successful</option>
+            <option value="rejected">Rejected (429)</option>
+            <option value="other">Errors</option>
+          </select>
+          <button type="button" class="btn-secondary" (click)="expandAll()">Expand all</button>
+          <button type="button" class="btn-secondary" (click)="collapseAll()">Collapse all</button>
+        </div>
+      </div>
+      <p class="responses-summary">
+        {{ responseCounts().ok }} successful &middot; {{ responseCounts().rejected }} rejected &middot;
+        {{ responseCounts().other }} errors
+      </p>
+      <div class="responses-scroll" tabindex="0" role="region" aria-label="Responses, scrollable list">
+        @for (response of visibleResponses(); track response.index) {
+          <details class="response-entry" [open]="isResponseExpanded(response.index)" (toggle)="setResponseExpanded(response.index, $any($event.target).open)">
+            <summary>
+              Request #{{ response.index }} — HTTP {{ response.status }}
+              @if (response.status === 429) { <span class="badge rejected">REJECTED</span> }
+              @else if (response.status >= 200 && response.status < 300) { <span class="badge success">OK</span> }
+              @else if (response.status === 404) { <span class="badge notfound">NOT FOUND</span> }
+              @else if (response.transportError) { <span class="badge error">ERROR</span> }
+            </summary>
+            <div class="response-detail">
+              <p><strong>Request:</strong> {{ lastRunLabel() }} (request #{{ response.index }})</p>
+              <p><strong>Status:</strong> HTTP {{ response.status }}</p>
+              @if (response.headers.retryAfter || response.headers.limit || response.headers.remaining || response.headers.policy) {
+                <dl class="rate-limit-headers">
+                  @if (response.headers.retryAfter) { <div><dt>Retry-After</dt><dd>{{ response.headers.retryAfter }} s</dd></div> }
+                  @if (response.headers.limit) { <div><dt>X-RateLimit-Limit</dt><dd>{{ response.headers.limit }}</dd></div> }
+                  @if (response.headers.remaining) { <div><dt>X-RateLimit-Remaining</dt><dd>{{ response.headers.remaining }}</dd></div> }
+                  @if (response.headers.policy) { <div><dt>X-RateLimit-Policy</dt><dd>{{ response.headers.policy }}</dd></div> }
+                </dl>
+              }
+              @if (response.message) {
+                <p><strong>Message:</strong> {{ response.message }}</p>
+              }
+              @if (response.transportError) {
+                <p class="transport-error"><strong>Transport error:</strong> {{ response.transportError }}</p>
+              }
+              @if (response.body !== null) {
+                <pre>{{ json(response.body) }}</pre>
+              } @else {
+                <p class="no-body">(no response body)</p>
+              }
+            </div>
+          </details>
+        } @empty {
+          <p class="empty">No responses match this filter.</p>
+        }
+      </div>
+    </aside>
   }
+  </div>
 </section>
