@@ -170,6 +170,9 @@ export interface TrafficEvent {
   retryAfterSeconds: number | null;
   client: string;
   user: string | null;
+  /** Set for requests sent by the console's demo runner, so a decision matches its response. */
+  run?: string | null;
+  seq?: number | null;
 }
 
 /** Per-second outcome counts behind the live chart. */

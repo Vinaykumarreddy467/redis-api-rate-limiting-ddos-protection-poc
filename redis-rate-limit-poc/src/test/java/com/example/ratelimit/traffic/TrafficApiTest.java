@@ -102,8 +102,87 @@ class TrafficApiTest {
                 .isGreaterThanOrEqualTo(3);
     }
 
+    @org.springframework.boot.test.web.server.LocalServerPort
+    int port;
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void demoRunTagsAreStoredWhenWellFormedAndDroppedWhenNot() throws Exception {
+        var good = new HttpHeaders();
+        good.set(HttpHeaders.AUTHORIZATION, "Basic " + java.util.Base64.getEncoder().encodeToString("alice:alice-pw".getBytes()));
+        good.set("X-RateGuard-Run", "run-ab12cd34");
+        good.set("X-RateGuard-Seq", "7");
+        rest.exchange("/api/products", HttpMethod.GET, new HttpEntity<>(good), String.class);
+        var bad = new HttpHeaders();
+        bad.set(HttpHeaders.AUTHORIZATION, good.getFirst(HttpHeaders.AUTHORIZATION));
+        bad.set("X-RateGuard-Run", "<script>alert(1)</script>");
+        bad.set("X-RateGuard-Seq", "7");
+        rest.exchange("/api/products", HttpMethod.GET, new HttpEntity<>(bad), String.class);
+
+        List<Map<String, Object>> events = List.of();
+        for (int attempt = 0; attempt < 50 && events.size() < 2; attempt++) {
+            Thread.sleep(100);
+            events = ((List<Map<String, Object>>) traffic(0).get("events")).stream()
+                    .filter(e -> "/api/products".equals(e.get("path"))).toList();
+        }
+        // Newest first: the malformed tag was sent last.
+        assertThat(events.get(0).get("run")).isNull();
+        assertThat(events.get(0).get("seq")).isNull();
+        var tagged = events.stream().filter(e -> "run-ab12cd34".equals(e.get("run"))).findFirst().orElseThrow();
+        assertThat(((Number) tagged.get("seq")).intValue()).isEqualTo(7);
+    }
+
+    @Test
+    void liveStreamPushesEachDecisionAsSoonAsItIsRecorded() throws Exception {
+        var client = java.net.http.HttpClient.newHttpClient();
+        var request = java.net.http.HttpRequest.newBuilder(
+                        java.net.URI.create("http://localhost:" + port + "/api/admin/rate-limit/traffic/stream"))
+                .header(HttpHeaders.AUTHORIZATION, "Basic " + java.util.Base64.getEncoder()
+                        .encodeToString("admin-test:admin-test-secret".getBytes()))
+                .header("Accept", "text/event-stream").build();
+        var response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofLines());
+        assertThat(response.statusCode()).isEqualTo(200);
+
+        var lines = new java.util.concurrent.LinkedBlockingQueue<String>();
+        var reader = new Thread(() -> response.body().forEach(lines::add), "test-sse-reader");
+        reader.setDaemon(true);
+        reader.start();
+
+        assertThat(awaitLine(lines, "event:hello", 5000)).isTrue();
+        long sentAt = System.currentTimeMillis();
+        rest.exchange("/api/products", HttpMethod.GET, basic("alice:alice-pw"), String.class);
+        assertThat(awaitLine(lines, "event:traffic", 5000)).as("a traffic event is pushed").isTrue();
+        long delay = System.currentTimeMillis() - sentAt;
+        String data = null;
+        for (int i = 0; i < 10 && (data == null || !data.startsWith("data:")); i++) {
+            data = lines.poll(2, java.util.concurrent.TimeUnit.SECONDS); // skips the id: line
+        }
+        assertThat(data).startsWith("data:").contains("/api/products").contains("\"outcome\":\"ALLOWED\"");
+        // Pushed, not polled: well under the 400 ms tail timer plus request time.
+        assertThat(delay).isLessThan(3000);
+        assertThat(awaitLine(lines, "event:buckets", 4000)).isTrue();
+        // Close the connection: an open stream would otherwise hold the server's shutdown.
+        response.body().close();
+        reader.interrupt();
+    }
+
+    private static boolean awaitLine(java.util.concurrent.BlockingQueue<String> lines, String prefix, long millis)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + millis;
+        while (System.currentTimeMillis() < deadline) {
+            var line = lines.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS);
+            if (line != null && line.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     @Test
     void onlyAdministratorsMayReadTraffic() {
+        var streamAsUser = rest.exchange("/api/admin/rate-limit/traffic/stream", HttpMethod.GET,
+                basic("alice:alice-pw"), String.class);
+        assertThat(streamAsUser.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
         var asUser = rest.exchange("/api/admin/rate-limit/traffic", HttpMethod.GET,
                 basic("alice:alice-pw"), String.class);
         assertThat(asUser.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);

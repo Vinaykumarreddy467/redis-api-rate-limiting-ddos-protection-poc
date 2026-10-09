@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { By } from '@angular/platform-browser';
 
 import { AdminApiService } from '../../core/admin-api.service';
-import { TrafficStore } from '../../core/traffic-store.service';
+import { TRAFFIC_FETCH, TrafficStore } from '../../core/traffic-store.service';
 import { RequestDemoComponent } from '../request-demo/request-demo.component';
 import { TrafficPageComponent } from './traffic-page.component';
 
@@ -56,7 +56,13 @@ describe('TrafficPageComponent', () => {
   beforeEach(async () => {
     TestBed.configureTestingModule({
       imports: [TrafficPageComponent],
-      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        // No live stream in these tests: the page falls back to polling, which the fake backend answers.
+        { provide: TRAFFIC_FETCH, useValue: () => Promise.reject(new Error('no stream')) },
+      ],
     });
     http = TestBed.inject(HttpTestingController);
     const login = firstValueFrom(TestBed.inject(AdminApiService).login('pocadmin', 'test-only'));
@@ -65,6 +71,7 @@ describe('TrafficPageComponent', () => {
     fixture = TestBed.createComponent(TrafficPageComponent);
     fixture.detectChanges();
     // The first traffic answer is history from before the page opened; it must not reach the feed.
+    await new Promise((resolve) => setTimeout(resolve, 0)); // the failed stream hands over to a poll
     answerAll();
     await fixture.whenStable();
     fixture.detectChanges();
@@ -88,6 +95,7 @@ describe('TrafficPageComponent', () => {
   it('opens with an empty feed even when the server still holds older requests', async () => {
     TestBed.inject(TrafficStore).stop();
     TestBed.inject(TrafficStore).start();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     answerAll();
     await fixture.whenStable();
     fixture.detectChanges();

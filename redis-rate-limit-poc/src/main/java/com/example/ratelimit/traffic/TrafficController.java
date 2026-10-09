@@ -18,9 +18,32 @@ import org.springframework.web.bind.annotation.RestController;
 public class TrafficController {
 
     private final TrafficRecorder recorder;
+    private final TrafficStream stream;
 
-    public TrafficController(TrafficRecorder recorder) {
+    public TrafficController(TrafficRecorder recorder, TrafficStream stream) {
         this.recorder = recorder;
+        this.stream = stream;
+    }
+
+    /**
+     * Live push of decisions as Server-Sent Events. Events: {@code hello} (cursor), {@code traffic} (one
+     * decision), {@code buckets} (the per-second chart, once a second). Without {@code since} it starts from
+     * now; with it, it resumes after that event id.
+     */
+    @GetMapping(path = "/stream", produces = org.springframework.http.MediaType.TEXT_EVENT_STREAM_VALUE)
+    public org.springframework.http.ResponseEntity<org.springframework.web.servlet.mvc.method.annotation.SseEmitter> stream(
+            @RequestParam(required = false) Long since, @RequestParam(defaultValue = "60") int seconds) {
+        if (!recorder.enabled()) {
+            return org.springframework.http.ResponseEntity.status(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE).build();
+        }
+        var emitter = stream.subscribe(since, Math.min(Math.max(seconds, 10), 300));
+        if (emitter == null) {
+            return org.springframework.http.ResponseEntity.status(org.springframework.http.HttpStatus.TOO_MANY_REQUESTS).build();
+        }
+        return org.springframework.http.ResponseEntity.ok()
+                .header("Cache-Control", "no-cache")
+                .header("X-Accel-Buffering", "no")
+                .body(emitter);
     }
 
     public record TrafficResponse(boolean enabled, int capacity, long dropped, Instant serverTime,

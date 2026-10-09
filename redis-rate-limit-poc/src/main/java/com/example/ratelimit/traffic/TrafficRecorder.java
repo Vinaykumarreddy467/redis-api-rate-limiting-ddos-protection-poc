@@ -49,6 +49,7 @@ public class TrafficRecorder {
     private final String salt;
     private final ThreadPoolExecutor worker;
     private final AtomicLong dropped = new AtomicLong();
+    private final java.util.List<Runnable> listeners = new java.util.concurrent.CopyOnWriteArrayList<>();
     private volatile long lastWarnMillis;
     private volatile long lastPruneSecond;
 
@@ -84,9 +85,30 @@ public class TrafficRecorder {
         return dropped.get();
     }
 
-    /** Never throws and never blocks: the caller is serving a request. */
+    /** Called on the recorder thread after each event is stored, so a live stream can push it at once. */
+    public void addListener(Runnable onRecorded) {
+        listeners.add(onRecorded);
+    }
+
+    /** Id of the newest event ever recorded (0 when none), i.e. the cursor that skips all history. */
+    public long latestId() {
+        try {
+            var value = redis.opsForValue().get(SEQ);
+            return value == null ? 0 : Long.parseLong(value);
+        } catch (RuntimeException e) {
+            return 0;
+        }
+    }
+
     public void record(String method, String path, String outcome, int status, String policy, Long limit,
             Long remaining, Long retryAfterSeconds, String remoteAddr, String username) {
+        record(method, path, outcome, status, policy, limit, remaining, retryAfterSeconds, remoteAddr,
+                username, null, null);
+    }
+
+    /** Never throws and never blocks: the caller is serving a request. */
+    public void record(String method, String path, String outcome, int status, String policy, Long limit,
+            Long remaining, Long retryAfterSeconds, String remoteAddr, String username, String run, Integer seq) {
         if (!enabled) {
             return;
         }
@@ -95,18 +117,19 @@ public class TrafficRecorder {
             var client = maskIp(remoteAddr);
             var user = username == null ? null : hashUser(username);
             worker.execute(() -> write(at, method, path, outcome, status, policy, limit, remaining,
-                    retryAfterSeconds, client, user));
+                    retryAfterSeconds, client, user, run, seq));
         } catch (RuntimeException e) {
             dropped.incrementAndGet();
         }
     }
 
     private void write(Instant at, String method, String path, String outcome, int status, String policy,
-            Long limit, Long remaining, Long retryAfterSeconds, String client, String user) {
+            Long limit, Long remaining, Long retryAfterSeconds, String client, String user, String run,
+            Integer seq) {
         try {
             Long id = redis.opsForValue().increment(SEQ);
             var event = new TrafficEvent(id == null ? 0 : id, at, method, path, outcome, status, policy, limit,
-                    remaining, retryAfterSeconds, client, user);
+                    remaining, retryAfterSeconds, client, user, run, seq);
             redis.opsForList().leftPush(EVENTS, mapper.writeValueAsString(event));
             redis.opsForList().trim(EVENTS, 0, capacity - 1L);
             long second = at.getEpochSecond();
@@ -114,6 +137,13 @@ public class TrafficRecorder {
             if (second - lastPruneSecond >= 10) {
                 lastPruneSecond = second;
                 prune(second);
+            }
+            for (var listener : listeners) {
+                try {
+                    listener.run();
+                } catch (RuntimeException ignored) {
+                    // A broken subscriber must not stop recording.
+                }
             }
         } catch (Exception e) {
             long now = System.currentTimeMillis();

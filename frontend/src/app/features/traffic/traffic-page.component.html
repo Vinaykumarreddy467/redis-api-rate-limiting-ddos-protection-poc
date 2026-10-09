@@ -18,7 +18,7 @@
       <h3 id="live-heading">Live traffic</h3>
       <div class="live-actions">
         <span class="chip" [class.chip-on]="traffic.live() && !traffic.paused()" [class.chip-off]="traffic.paused()">
-          {{ traffic.paused() ? 'Paused' : traffic.live() ? 'Live' : 'Stopped' }}
+          {{ traffic.paused() ? 'Paused' : traffic.mode() === 'stream' ? 'Live' : traffic.mode() === 'polling' ? 'Live (polling)' : 'Stopped' }}
         </span>
         <button type="button" class="btn-secondary" (click)="traffic.togglePause()">
           {{ traffic.paused() ? 'Resume feed' : 'Pause feed' }}
@@ -89,6 +89,7 @@
                 <td class="nowrap">
                   <span class="method" [attr.data-method]="event.method">{{ event.method }}</span>
                   <span class="mono">{{ event.path }}</span>
+                  @if (event.seq) { <span class="sub" title="Request number in the demo run">#{{ event.seq }}</span> }
                 </td>
                 <td class="policy">{{ policyName(event) }}</td>
                 <td class="nowrap">{{ quota(event) }}</td>

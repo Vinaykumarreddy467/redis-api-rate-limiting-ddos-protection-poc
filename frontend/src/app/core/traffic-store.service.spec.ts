@@ -2,11 +2,11 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { firstValueFrom } from 'rxjs';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AdminApiService } from './admin-api.service';
 import { TrafficEvent } from './admin-models';
-import { MAX_FEED_EVENTS, TrafficStore } from './traffic-store.service';
+import { MAX_FEED_EVENTS, TRAFFIC_FETCH, TrafficStore } from './traffic-store.service';
 
 const BASE = '/api/admin/rate-limit';
 
@@ -38,6 +38,7 @@ const response = (events: TrafficEvent[], extra: object = {}) => ({
 describe('TrafficStore', () => {
   let store: TrafficStore;
   let http: HttpTestingController;
+  let fetchImpl: (...args: Parameters<typeof fetch>) => Promise<Response>;
 
   /** Answers the next poll with the given body and waits for the store to absorb it. */
   const poll = async (body: object, expectSince?: number) => {
@@ -51,7 +52,14 @@ describe('TrafficStore', () => {
   };
 
   beforeEach(async () => {
-    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
+    fetchImpl = () => Promise.reject(new Error('no live stream in this test'));
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: TRAFFIC_FETCH, useValue: (...args: Parameters<typeof fetch>) => fetchImpl(...args) },
+      ],
+    });
     http = TestBed.inject(HttpTestingController);
     const login = firstValueFrom(TestBed.inject(AdminApiService).login('pocadmin', 'test-only'));
     http.expectOne(`${BASE}/policies`).flush([]);
@@ -75,8 +83,8 @@ describe('TrafficStore', () => {
     expect(store.events()).toHaveLength(1);
     store.start();
     expect(store.events()).toEqual([]);
-    // start() polls once to re-prime; answer it so nothing is left pending.
-    http.expectOne((req) => req.url.startsWith(`${BASE}/traffic`)).flush(response([event(1)]));
+    // The stream cannot open here, so the store falls back to a poll that re-primes the cursor.
+    await vi.waitFor(() => http.expectOne((req) => req.url.startsWith(`${BASE}/traffic`)).flush(response([event(1)])));
     store.stop();
   });
 
@@ -102,8 +110,8 @@ describe('TrafficStore', () => {
     // The chart keeps moving while the feed is frozen.
     expect(store.buckets()).toHaveLength(1);
 
+    // What arrived meanwhile was held, and is added the moment the feed resumes.
     store.togglePause();
-    await poll(response([event(2)]), 1);
     expect(store.events().map((e) => e.id)).toEqual([2, 1]);
   });
 
@@ -136,5 +144,67 @@ describe('TrafficStore', () => {
     expect(store.dropped()).toBe(7);
     expect(store.enabled()).toBe(false);
   });
+  });
+
+  describe('live stream', () => {
+    const encoder = new TextEncoder();
+    /** A server-sent-event response that stays open, delivering the given chunks. */
+    const sse = (...chunks: string[]) =>
+      Promise.resolve(new Response(new ReadableStream<Uint8Array>({
+        start(controller) { for (const chunk of chunks) controller.enqueue(encoder.encode(chunk)); },
+      }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+    const message = (name: string, data: unknown) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
+
+    afterEach(() => store.stop());
+
+    it('shows pushed decisions newest first, from now on, even when a message arrives in pieces', async () => {
+      const second = message('traffic', event(42, 'REJECTED'));
+      fetchImpl = () => sse(
+        message('hello', { cursor: 40, capacity: 1000, dropped: 0 }),
+        message('traffic', event(41)),
+        second.slice(0, 25), second.slice(25),
+        ': keep-alive\n\n',
+        message('buckets', { buckets: [{ t: 1, allowed: 1, rejected: 1, error: 0 }], dropped: 3 }),
+      );
+      store.start();
+      await vi.waitFor(() => expect(store.events().map((e) => e.id)).toEqual([42, 41]));
+      expect(store.mode()).toBe('stream');
+      expect(store.buckets()).toHaveLength(1);
+      expect(store.dropped()).toBe(3);
+      http.expectNone((req) => req.url.startsWith(`${BASE}/traffic`));
+    });
+
+    it('opens the stream with the admin credentials and no resume cursor on first connect', async () => {
+      let url = '';
+      let headers: HeadersInit | undefined;
+      fetchImpl = (input, init) => {
+        url = String(input);
+        headers = init?.headers;
+        return sse(message('hello', { cursor: 0, capacity: 1000, dropped: 0 }));
+      };
+      store.start();
+      await vi.waitFor(() => expect(store.mode()).toBe('stream'));
+      expect(url).toContain('/api/admin/rate-limit/traffic/stream');
+      expect(url).not.toContain('since=');
+      expect((headers as Record<string, string>)['Authorization']).toMatch(/^Basic /);
+    });
+
+    it('holds pushed events while paused and adds them on resume', async () => {
+      fetchImpl = () => sse(message('hello', { cursor: 0, capacity: 1000, dropped: 0 }), message('traffic', event(1)));
+      store.togglePause();
+      store.start();
+      await vi.waitFor(() => expect(store.mode()).toBe('stream'));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(store.events()).toEqual([]);
+      store.togglePause();
+      expect(store.events().map((e) => e.id)).toEqual([1]);
+    });
+
+    it('falls back to polling when the stream cannot be opened', async () => {
+      fetchImpl = () => Promise.resolve(new Response('nope', { status: 503 }));
+      store.start();
+      await vi.waitFor(() => http.expectOne((req) => req.url.startsWith(`${BASE}/traffic`)).flush(response([event(1)])));
+      expect(store.mode()).toBe('polling');
+    });
   });
 });

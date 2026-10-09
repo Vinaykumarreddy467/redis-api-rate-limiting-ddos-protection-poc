@@ -253,8 +253,22 @@ public class RateLimitFilter extends OncePerRequestFilter {
             String user = auth != null && auth.isAuthenticated()
                     && !(auth instanceof org.springframework.security.authentication.AnonymousAuthenticationToken)
                     ? auth.getName() : null;
+            // The console's demo runner tags its requests; anything malformed is dropped, never trusted.
+            String run = request.getHeader("X-RateGuard-Run");
+            if (run != null && !run.matches("run-[0-9a-z]{8}")) {
+                run = null;
+            }
+            Integer seq = null;
+            if (run != null) {
+                try {
+                    int parsed = Integer.parseInt(request.getHeader("X-RateGuard-Seq"));
+                    seq = parsed >= 1 && parsed <= 100_000 ? parsed : null;
+                } catch (NumberFormatException e) {
+                    seq = null;
+                }
+            }
             traffic.record(request.getMethod(), request.getRequestURI(), outcome.name(), response.getStatus(),
-                    policyId, limit, remaining, retryAfter, request.getRemoteAddr(), user);
+                    policyId, limit, remaining, retryAfter, request.getRemoteAddr(), user, run, seq);
         } catch (RuntimeException e) {
             log.debug("traffic tracking skipped: {}", e.getMessage());
         }
