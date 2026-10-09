@@ -53,11 +53,21 @@ public class RateLimitFilter extends OncePerRequestFilter {
     private final AntPathMatcher matcher = new AntPathMatcher();
     private final com.example.ratelimit.policy.ExemptionStore exemptions;
     private final com.example.ratelimit.policy.EndpointExemptionService endpointExemptions;
+    private final com.example.ratelimit.traffic.TrafficRecorder traffic;
 
     public RateLimitFilter(PolicyEnforcer enforcer, RateLimitIdentityResolver identities,
             RateLimitMetrics metrics, RateLimitProperties properties, ObjectMapper mapper, Clock clock,
             com.example.ratelimit.policy.ExemptionStore exemptions,
             com.example.ratelimit.policy.EndpointExemptionService endpointExemptions) {
+        this(enforcer, identities, metrics, properties, mapper, clock, exemptions, endpointExemptions, null);
+    }
+
+    public RateLimitFilter(PolicyEnforcer enforcer, RateLimitIdentityResolver identities,
+            RateLimitMetrics metrics, RateLimitProperties properties, ObjectMapper mapper, Clock clock,
+            com.example.ratelimit.policy.ExemptionStore exemptions,
+            com.example.ratelimit.policy.EndpointExemptionService endpointExemptions,
+            com.example.ratelimit.traffic.TrafficRecorder traffic) {
+        this.traffic = traffic;
         this.enforcer = enforcer;
         this.identities = identities;
         this.metrics = metrics;
@@ -163,9 +173,14 @@ public class RateLimitFilter extends OncePerRequestFilter {
             log.warn("rate limit store unavailable for policy {}", governing.id(), e);
             if (enforcer.failureModeFor(governing) == FailureMode.FAIL_CLOSED) {
                 writeStoreUnavailable(response, request, governing);
+                track(request, response, RateLimitMetrics.Outcome.STORE_ERROR, governing.id(), null, null, 5L);
                 return;
             }
-            chain.doFilter(request, response);
+            try {
+                chain.doFilter(request, response);
+            } finally {
+                track(request, response, RateLimitMetrics.Outcome.STORE_ERROR, governing.id(), null, null, null);
+            }
             return;
         }
 
@@ -189,7 +204,11 @@ public class RateLimitFilter extends OncePerRequestFilter {
                         composition.consulted().stream().map(PolicyDocument::id).toList().toString());
             }
             if (composition.leases().isEmpty()) {
-                chain.doFilter(request, response);
+                try {
+                    chain.doFilter(request, response);
+                } finally {
+                    trackAllowed(request, response, governing.id(), composition);
+                }
                 return;
             }
             // Concurrency permits are held for the whole request and released afterwards, so in-flight
@@ -197,6 +216,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
             try {
                 chain.doFilter(request, response);
             } finally {
+                trackAllowed(request, response, governing.id(), composition);
                 if (request.isAsyncStarted()) {
                     request.getAsyncContext().addListener(new ReleaseOnAsyncDone(resolved, composition));
                 } else {
@@ -209,6 +229,35 @@ public class RateLimitFilter extends OncePerRequestFilter {
         String outcomeIdentity = identityTypeFor(resolved, blocked.id());
         metrics.record(RateLimitMetrics.Outcome.REJECTED, blocked.id(), outcomeIdentity);
         writeRateLimited(response, request, blocked, composition);
+        track(request, response, RateLimitMetrics.Outcome.REJECTED, blocked.id(),
+                (long) composition.decision().limit(), 0L, composition.decision().retryAfter().toSeconds());
+    }
+
+    private void trackAllowed(HttpServletRequest request, HttpServletResponse response, String policyId,
+            PolicyEnforcer.Composition composition) {
+        var decision = composition.decision();
+        track(request, response, RateLimitMetrics.Outcome.ALLOWED, policyId,
+                decision == null ? null : (long) decision.limit(),
+                decision == null ? null : (long) decision.remaining(), null);
+    }
+
+    /** Feeds the live traffic view. Best effort: it must never change or fail the request it describes. */
+    private void track(HttpServletRequest request, HttpServletResponse response,
+            RateLimitMetrics.Outcome outcome, String policyId, Long limit, Long remaining, Long retryAfter) {
+        if (traffic == null) {
+            return;
+        }
+        try {
+            var auth = org.springframework.security.core.context.SecurityContextHolder.getContext()
+                    .getAuthentication();
+            String user = auth != null && auth.isAuthenticated()
+                    && !(auth instanceof org.springframework.security.authentication.AnonymousAuthenticationToken)
+                    ? auth.getName() : null;
+            traffic.record(request.getMethod(), request.getRequestURI(), outcome.name(), response.getStatus(),
+                    policyId, limit, remaining, retryAfter, request.getRemoteAddr(), user);
+        } catch (RuntimeException e) {
+            log.debug("traffic tracking skipped: {}", e.getMessage());
+        }
     }
 
     private static String identityTypeFor(List<PolicyEnforcer.ResolvedPolicy> resolved, String policyId) {

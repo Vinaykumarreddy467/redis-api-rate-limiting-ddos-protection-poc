@@ -33,8 +33,10 @@ public class RateLimitConfiguration {
     RateLimitFilter rateLimitFilter(PolicyEnforcer enforcer, RateLimitIdentityResolver identities,
             RateLimitMetrics metrics, RateLimitProperties properties, ObjectMapper mapper, Clock clock,
             com.example.ratelimit.policy.ExemptionStore exemptions,
-            com.example.ratelimit.policy.EndpointExemptionService endpointExemptions) {
-        return new RateLimitFilter(enforcer, identities, metrics, properties, mapper, clock, exemptions, endpointExemptions);
+            com.example.ratelimit.policy.EndpointExemptionService endpointExemptions,
+            com.example.ratelimit.traffic.TrafficRecorder traffic) {
+        return new RateLimitFilter(enforcer, identities, metrics, properties, mapper, clock, exemptions,
+                endpointExemptions, traffic);
     }
 
     /**
