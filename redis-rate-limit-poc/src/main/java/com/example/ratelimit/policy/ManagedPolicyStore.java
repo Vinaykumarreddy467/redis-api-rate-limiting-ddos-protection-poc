@@ -532,7 +532,10 @@ public class ManagedPolicyStore {
             }
             PolicyGroup group = mapper.readValue(json.toString(), PolicyGroup.class);
             Object ids = redis.opsForHash().get(key, "projectionIds");
-            if ((group.projectionIds() == null || group.projectionIds().isEmpty()) && ids != null) {
+            // The Lua writer encodes an empty list as {} (cjson cannot tell it from an empty object); a group
+            // with no endpoints therefore has no projection ids, and must still be readable.
+            if ((group.projectionIds() == null || group.projectionIds().isEmpty()) && ids != null
+                    && ids.toString().trim().startsWith("[")) {
                 group = withProjectionIds(group, mapper.readValue(ids.toString(),
                         mapper.getTypeFactory().constructCollectionType(List.class, String.class)));
             }

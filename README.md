@@ -99,6 +99,16 @@ materialized as individual `PolicyDocument` records in Redis so the enforcement 
 The admin UI provides a group editor with add/remove endpoint and scope-rule rows, and the request
 tester lets you select a group endpoint directly.
 
+**Ids are server-generated and immutable.** A group id is the lowercase slug of its name (max 55
+characters, numeric suffix on collision, e.g. `qa-orders-2`); an endpoint id is `ep-xxxxxxxx`. On
+CREATE a caller may pin a group or endpoint id only if it matches `^[a-z0-9][a-z0-9-]{0,62}$`. On
+update, an endpoint id that does not belong to the group returns 400 "cannot be changed"; an endpoint
+without an id is treated as new. Overlapping routes (same path ignoring trailing slash, same method or
+`ANY`) are rejected with 400 `policy_invalid`, within a group and across groups, but only for routes
+the request adds or moves. Malformed rule values (window, scope, algorithm, refillInterval,
+leaseDuration) return 400 `policy_invalid` with a message instead of 500. `GET /policies` rows carry
+`source` = `POLICY` | `GROUP` | `GLOBAL`.
+
 **Exemptions** are separate rules, not zero-limit policies: the create-policy form has an
 "Exclude this API from rate limiting" checkbox that stores a distinct exemption for the selected
 method and path (own Redis namespace `ratelimit:exemption:v1`, managed under

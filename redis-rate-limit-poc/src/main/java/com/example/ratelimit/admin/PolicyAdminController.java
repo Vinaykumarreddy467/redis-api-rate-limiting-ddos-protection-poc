@@ -646,6 +646,9 @@ public class PolicyAdminController {
         if (store.findGroup(groupId).isPresent()) {
             throw new PolicyValidationException(List.of("group with id '" + groupId + "' already exists"));
         }
+        if (request.name() == null || request.name().isBlank()) {
+            throw new PolicyValidationException(List.of("name is required"));
+        }
         var endpoints = buildEndpoints(request.endpoints(), null, groupId);
         var group = new PolicyGroup(groupId, request.name() != null ? request.name() : groupId,
                 request.enabled() != null ? request.enabled() : true, endpoints,
@@ -732,6 +735,9 @@ public class PolicyAdminController {
         var existing = store.findGlobalRules().orElse(null);
         if (request.version() == null) {
             throw new PolicyValidationException(List.of("version is required on update"));
+        }
+        if (request.rules() == null) {
+            throw new PolicyValidationException(List.of("rules is required"));
         }
         var rules = new ArrayList<ScopeRule>();
         for (var rule : request.rules()) {
@@ -1011,6 +1017,14 @@ public class PolicyAdminController {
         log.warn("policy store unavailable while serving an admin request: {}", e.getMessage());
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(ErrorResponse.of(
                 "store_unavailable", "the policy store is temporarily unavailable"));
+    }
+
+    /** Unparseable JSON or a wrong type (for example "enabled": "yes") is the caller's mistake, not a 500. */
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> onUnreadableBody(
+            org.springframework.http.converter.HttpMessageNotReadableException e) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ErrorResponse.of("malformed_request",
+                "the request body is not valid JSON or has a value of the wrong type"));
     }
 
     @ExceptionHandler(PolicyStoreException.class)

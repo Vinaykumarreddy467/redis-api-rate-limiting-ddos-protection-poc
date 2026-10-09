@@ -267,6 +267,50 @@ class PolicyAdminControllerTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void groupWithNoEndpointsCanBeReadBackAndAnUnnamedGroupIsRejected() {
+        var empty = Map.<String, Object>of("name", "Empty Group", "enabled", true, "endpoints", java.util.List.of());
+        var created = rest.exchange("/api/admin/rate-limit/groups", HttpMethod.POST,
+                new HttpEntity<>(empty, admin()), Map.class);
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        // Reading by id used to fail with a 500 because an empty projection list was stored as {}.
+        var read = rest.exchange("/api/admin/rate-limit/groups/empty-group", HttpMethod.GET,
+                new HttpEntity<>(admin()), Map.class);
+        assertThat(read.getStatusCode()).isEqualTo(HttpStatus.OK);
+        // ...which also broke creating another group with the same name (slug uniqueness lookup).
+        var again = rest.exchange("/api/admin/rate-limit/groups", HttpMethod.POST,
+                new HttpEntity<>(empty, admin()), Map.class);
+        assertThat(again.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(again.getBody().get("id")).isEqualTo("empty-group-2");
+
+        var unnamed = rest.exchange("/api/admin/rate-limit/groups", HttpMethod.POST,
+                new HttpEntity<>(Map.of("enabled", true), admin()), Map.class);
+        assertThat(unnamed.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(unnamed.getBody().toString()).contains("name is required");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void malformedBodiesAreClientErrorsInTheStandardErrorShape() {
+        var headers = admin();
+        headers.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+        for (var path : java.util.List.of("/groups", "/global-rules")) {
+            var wrongType = path.equals("/groups") ? "{\"enabled\":\"yes\"}" : "{\"version\":\"abc\"}";
+            for (var body : java.util.List.of("{bad json", wrongType)) {
+                var method = path.equals("/groups") ? HttpMethod.POST : HttpMethod.PUT;
+                var response = rest.exchange("/api/admin/rate-limit" + path, method,
+                        new HttpEntity<>(body, headers), Map.class);
+                assertThat(response.getStatusCode()).as("%s %s", path, body).isEqualTo(HttpStatus.BAD_REQUEST);
+                assertThat(response.getBody().get("error")).isEqualTo("malformed_request");
+            }
+        }
+        var nullRules = rest.exchange("/api/admin/rate-limit/global-rules", HttpMethod.PUT,
+                new HttpEntity<>("{\"version\":0,\"rules\":null}", headers), Map.class);
+        assertThat(nullRules.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(nullRules.getBody().toString()).contains("rules is required");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void duplicateMethodAndPathIsRejectedWithinAndAcrossGroups() {
         var twice = Map.<String, Object>of("name", "Dup Within", "enabled", true, "endpoints",
                 java.util.List.of(idTestEndpoint(null, "/api/dup-test"), idTestEndpoint(null, "/api/dup-test")));
