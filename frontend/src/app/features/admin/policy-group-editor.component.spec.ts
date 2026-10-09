@@ -32,18 +32,47 @@ describe('PolicyGroupEditorComponent validation', () => {
     expect(root().querySelector('[data-validation-banner]')).toBeNull();
   });
 
-  it('shows a focusable banner and an inline message when the group id is invalid', async () => {
+  it('asks for a name instead of an id, since the server generates the id', async () => {
+    expect(root().querySelector('input[name="group-id"]')).toBeNull();
+
     button('Create group').click();
     await settle();
 
     const banner = root().querySelector<HTMLElement>('[data-validation-banner]');
     expect(banner).not.toBeNull();
     expect(banner!.getAttribute('tabindex')).toBe('-1');
-    expect(banner!.textContent).toContain('Group id is invalid.');
+    expect(banner!.textContent).toContain('Group name is required.');
 
-    const input = root().querySelector<HTMLInputElement>('input[name="group-id"]')!;
+    const input = root().querySelector<HTMLInputElement>('input[name="group-name"]')!;
     expect(input.getAttribute('aria-invalid')).toBe('true');
-    expect(root().querySelector('#group-id-error')?.textContent).toContain('lowercase letters, digits and hyphens');
+    expect(root().querySelector('#group-name-error')?.textContent).toContain('id is generated');
+  });
+
+  it('never sends ids for new endpoints and shows the id of saved ones read-only', async () => {
+    const existing = {
+      id: 'qa-orders', name: 'QA Orders', enabled: true, onRedisError: null, version: 3,
+      createdAt: '2026-10-09T00:00:00Z', updatedAt: '2026-10-09T00:00:00Z', updatedBy: 'pocadmin',
+      endpoints: [{
+        id: 'ep-1a2b3c4d', method: 'GET', path: '/api/products', displayName: 'Orders list',
+        repeatable: true, exempt: false, scopeRules: [],
+      }],
+    };
+    const edit = TestBed.createComponent(PolicyGroupEditorComponent);
+    edit.componentRef.setInput('group', existing);
+    edit.detectChanges();
+    await edit.whenStable();
+    const el = edit.nativeElement as HTMLElement;
+    const click = (label: string) => Array.from(el.querySelectorAll<HTMLButtonElement>('button'))
+      .find((b) => b.textContent?.trim() === label)!.click();
+
+    click('Edit endpoint');
+    edit.detectChanges();
+    expect(el.querySelector('input[name="endpoint-id"]')).toBeNull();
+    expect(el.querySelector('[data-endpoint-id-readonly]')?.textContent).toBe('ep-1a2b3c4d');
+
+    click('Add endpoint');
+    edit.detectChanges();
+    expect(el.querySelector('[data-endpoint-id-readonly]')).toBeNull();
   });
 
   it('refuses to add an endpoint whose path does not start with a slash', async () => {

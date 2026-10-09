@@ -197,7 +197,8 @@ export interface PolicyGroupEdit {
   id?: string;
   name?: string;
   enabled?: boolean;
-  endpoints: EndpointRule[];
+  /** An endpoint without an id is new: the server generates the id and never lets it change. */
+  endpoints: Array<Omit<EndpointRule, 'id'> & { id?: string }>;
   onRedisError?: FailureMode | null;
   version?: number;
 }

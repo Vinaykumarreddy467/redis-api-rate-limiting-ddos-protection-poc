@@ -215,6 +215,97 @@ class PolicyAdminControllerTest {
         }
     }
 
+    private static Map<String, Object> idTestEndpoint(String id, String path) {
+        var ep = new java.util.HashMap<String, Object>();
+        if (id != null) {
+            ep.put("id", id);
+        }
+        ep.put("method", "GET");
+        ep.put("path", path);
+        ep.put("displayName", "Endpoint " + path);
+        ep.put("repeatable", true);
+        ep.put("exempt", false);
+        ep.put("scopeRules", java.util.List.of(Map.of("scope", "IP", "algorithm", "FIXED_WINDOW",
+                "window", "PT1M", "limit", 5)));
+        return ep;
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void serverGeneratesReadableGroupIdAndEndpointIdsAndKeepsThemOnUpdate() {
+        var group = Map.<String, Object>of("name", "Id Test Orders", "enabled", true,
+                "endpoints", java.util.List.of(idTestEndpoint(null, "/api/idtest-a")));
+        var created = rest.exchange("/api/admin/rate-limit/groups", HttpMethod.POST,
+                new HttpEntity<>(group, admin()), Map.class);
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        var body = created.getBody();
+        assertThat(body.get("id")).isEqualTo("id-test-orders");
+        var endpointId = (String) ((Map<String, Object>) ((java.util.List<?>) body.get("endpoints")).get(0)).get("id");
+        assertThat(endpointId).startsWith("ep-");
+
+        // A second group with the same name gets a numbered id instead of colliding.
+        var second = rest.exchange("/api/admin/rate-limit/groups", HttpMethod.POST,
+                new HttpEntity<>(Map.<String, Object>of("name", "Id Test Orders", "enabled", true,
+                        "endpoints", java.util.List.of(idTestEndpoint(null, "/api/idtest-b"))), admin()), Map.class);
+        assertThat(second.getBody().get("id")).isEqualTo("id-test-orders-2");
+
+        // Update keeps the id; an unknown id (a rename) is rejected; an id-less endpoint is new.
+        var keep = Map.<String, Object>of("version", 1, "endpoints", java.util.List.of(
+                idTestEndpoint(endpointId, "/api/idtest-a"), idTestEndpoint(null, "/api/idtest-c")));
+        var ok = rest.exchange("/api/admin/rate-limit/groups/id-test-orders", HttpMethod.PUT,
+                new HttpEntity<>(keep, admin()), Map.class);
+        assertThat(ok.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat((java.util.List<?>) ok.getBody().get("endpoints")).hasSize(2);
+
+        var rename = Map.<String, Object>of("version", 2, "endpoints", java.util.List.of(
+                idTestEndpoint("my-own-id", "/api/idtest-a")));
+        var rejected = rest.exchange("/api/admin/rate-limit/groups/id-test-orders", HttpMethod.PUT,
+                new HttpEntity<>(rename, admin()), Map.class);
+        assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(rejected.getBody().toString()).contains("cannot be changed");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void duplicateMethodAndPathIsRejectedWithinAndAcrossGroups() {
+        var twice = Map.<String, Object>of("name", "Dup Within", "enabled", true, "endpoints",
+                java.util.List.of(idTestEndpoint(null, "/api/dup-test"), idTestEndpoint(null, "/api/dup-test")));
+        var within = rest.exchange("/api/admin/rate-limit/groups", HttpMethod.POST,
+                new HttpEntity<>(twice, admin()), Map.class);
+        assertThat(within.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(within.getBody().toString()).contains("overlaps another endpoint in this group");
+
+        var first = Map.<String, Object>of("name", "Dup First", "enabled", true, "endpoints",
+                java.util.List.of(idTestEndpoint(null, "/api/dup-test-2")));
+        assertThat(rest.exchange("/api/admin/rate-limit/groups", HttpMethod.POST,
+                new HttpEntity<>(first, admin()), Map.class).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+
+        var other = Map.<String, Object>of("name", "Dup Other", "enabled", true, "endpoints",
+                java.util.List.of(idTestEndpoint(null, "/api/dup-test-2")));
+        var across = rest.exchange("/api/admin/rate-limit/groups", HttpMethod.POST,
+                new HttpEntity<>(other, admin()), Map.class);
+        assertThat(across.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(across.getBody().toString()).contains("already managed by group 'Dup First'");
+
+        // A trailing slash or an ANY method is the same route, not a new one.
+        var slash = Map.<String, Object>of("name", "Dup Slash", "enabled", true, "endpoints",
+                java.util.List.of(idTestEndpoint(null, "/api/dup-test-2/")));
+        assertThat(rest.exchange("/api/admin/rate-limit/groups", HttpMethod.POST,
+                new HttpEntity<>(slash, admin()), Map.class).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        var any = idTestEndpoint(null, "/api/dup-test-2");
+        any.put("method", "ANY");
+        assertThat(rest.exchange("/api/admin/rate-limit/groups", HttpMethod.POST,
+                new HttpEntity<>(Map.<String, Object>of("name", "Dup Any", "enabled", true,
+                        "endpoints", java.util.List.of(any)), admin()), Map.class).getStatusCode())
+                .isEqualTo(HttpStatus.BAD_REQUEST);
+
+        // A supplied id must be a well-formed slug, so the UI's "draft:" placeholder can never be a real id.
+        var badId = Map.<String, Object>of("id", "draft:1", "name", "Bad Id", "enabled", true, "endpoints",
+                java.util.List.of(idTestEndpoint(null, "/api/dup-test-3")));
+        assertThat(rest.exchange("/api/admin/rate-limit/groups", HttpMethod.POST,
+                new HttpEntity<>(badId, admin()), Map.class).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
     @Test
     @SuppressWarnings("unchecked")
     void policyListLabelsWhereEachPolicyIsOwned() {

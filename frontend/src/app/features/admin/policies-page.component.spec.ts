@@ -382,8 +382,7 @@ describe('PoliciesPageComponent', () => {
   it('creates a group with endpoint rule fields and keeps global rules separately editable', async () => {
     await loadWorkspace([]);
     await click('.page-head .btn-primary');
-    const id = query<HTMLInputElement>('input[name="group-id"]')!;
-    id.value = 'new-group'; id.dispatchEvent(new Event('input'));
+    expect(query('input[name="group-id"]')).toBeNull();
     const name = query<HTMLInputElement>('input[name="group-name"]')!;
     name.value = 'New group'; name.dispatchEvent(new Event('input'));
     await click('button[aria-label="Add endpoint"]');
@@ -402,6 +401,9 @@ describe('PoliciesPageComponent', () => {
     const request = http.expectOne((req) => req.url === `${BASE}/groups` && req.method === 'POST');
     expect(request.request.body.endpoints).toHaveLength(1);
     expect(request.request.body.endpoints[0]).toMatchObject({ method: 'GET', path: '/api/created', displayName: 'Created endpoint' });
+    // The server generates both ids; the browser must not invent any.
+    expect(request.request.body.id).toBeUndefined();
+    expect(request.request.body.endpoints[0].id).toBeUndefined();
     request.flush({ ...GROUPS[0], id: 'new-group', name: 'New group' });
     await settle();
     http.expectOne(`${BASE}/groups`).flush(GROUPS);
