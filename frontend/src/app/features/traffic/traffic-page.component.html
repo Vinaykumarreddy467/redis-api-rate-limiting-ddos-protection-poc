@@ -1,0 +1,105 @@
+<section aria-labelledby="traffic-heading">
+  <div class="page-head">
+    <div>
+      <h2 id="traffic-heading">Traffic</h2>
+      <p class="page-sub">
+        Send test requests, then watch the limiter's decisions arrive live. Addresses are masked and user
+        names are hashed; only the most recent {{ maxEvents }} requests are kept, so this is a live view, not an
+        audit log.
+      </p>
+    </div>
+  </div>
+
+  <app-request-demo />
+
+  <section class="live panel" aria-labelledby="live-heading">
+    <div class="live-head">
+      <h3 id="live-heading">Live traffic</h3>
+      <div class="live-actions">
+        <span class="chip" [class.chip-on]="traffic.live() && !traffic.paused()" [class.chip-off]="traffic.paused()">
+          {{ traffic.paused() ? 'Paused' : traffic.live() ? 'Live' : 'Stopped' }}
+        </span>
+        <button type="button" class="btn-secondary" (click)="traffic.togglePause()">
+          {{ traffic.paused() ? 'Resume feed' : 'Pause feed' }}
+        </button>
+        <button type="button" class="btn-ghost" (click)="traffic.clear()">Clear</button>
+      </div>
+    </div>
+
+    @if (traffic.error(); as message) {
+      <p class="alert alert-bad" role="alert">{{ message }}</p>
+    }
+    @if (!traffic.enabled()) {
+      <p class="alert alert-warn">Live traffic recording is switched off on the server (ratelimit.traffic.enabled).</p>
+    }
+    @if (traffic.dropped() > 0) {
+      <p class="alert alert-warn">
+        {{ traffic.dropped() }} events were skipped because the server was too busy to record them. Counters
+        stay exact; only the feed is sampled.
+      </p>
+    }
+
+    <div class="totals" aria-hidden="true">
+      <span><span class="swatch allowed"></span>{{ totals().allowed }} allowed</span>
+      <span><span class="swatch rejected"></span>{{ totals().rejected }} blocked (429)</span>
+      <span><span class="swatch error"></span>{{ totals().error }} store errors</span>
+      <span class="muted">last 60 seconds</span>
+    </div>
+
+    <svg class="chart" [attr.viewBox]="'0 0 ' + chartWidth + ' ' + chartHeight" preserveAspectRatio="none"
+         role="img" [attr.aria-label]="chartSummary()">
+      <line x1="0" [attr.x2]="chartWidth" [attr.y1]="chartHeight - 0.5" [attr.y2]="chartHeight - 0.5" class="axis" />
+      @for (bar of bars(); track bar.x) {
+        <g>
+          <title>{{ bar.label }}</title>
+          @for (segment of bar.segments; track segment.kind) {
+            <rect [attr.x]="bar.x" [attr.y]="segment.y" [attr.width]="bar.width" [attr.height]="segment.height"
+                  [class]="'bar ' + segment.kind" />
+          }
+        </g>
+      }
+    </svg>
+    <p class="scale muted">Peak scale: {{ scale() }} requests per second</p>
+
+    @if (traffic.events().length === 0) {
+      <p class="empty">No requests yet. Run a test above and the decisions appear here as they happen.</p>
+    } @else {
+      <div class="feed-wrap">
+        <table class="feed">
+          <caption class="visually-hidden">Recent rate-limit decisions, newest first</caption>
+          <thead>
+            <tr>
+              <th scope="col">Time</th>
+              <th scope="col">Result</th>
+              <th scope="col">Request</th>
+              <th scope="col">Policy</th>
+              <th scope="col">Quota</th>
+              <th scope="col">Client</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (event of traffic.events(); track event.id) {
+              <tr [class.blocked]="event.outcome === 'REJECTED'">
+                <td class="nowrap mono">{{ event.at | date: 'HH:mm:ss' }}</td>
+                <td class="nowrap">
+                  <span class="result" [class]="'result ' + event.outcome.toLowerCase()">{{ resultLabel(event) }}</span>
+                  <span class="sub">HTTP {{ event.status }}</span>
+                </td>
+                <td class="nowrap">
+                  <span class="method" [attr.data-method]="event.method">{{ event.method }}</span>
+                  <span class="mono">{{ event.path }}</span>
+                </td>
+                <td class="policy">{{ policyName(event) }}</td>
+                <td class="nowrap">{{ quota(event) }}</td>
+                <td class="nowrap mono">
+                  {{ event.client }}
+                  @if (event.user) { <span class="sub">{{ event.user }}</span> }
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    }
+  </section>
+</section>

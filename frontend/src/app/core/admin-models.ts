@@ -156,6 +156,39 @@ export interface PolicyGroup {
 }
 
 /** Matches EndpointRule and EndpointRuleDto. */
+/** One rate-limit decision from the live traffic feed. Client is a masked IP; user is a hashed name. */
+export interface TrafficEvent {
+  id: number;
+  at: string;
+  method: string;
+  path: string;
+  outcome: 'ALLOWED' | 'REJECTED' | 'STORE_ERROR';
+  status: number;
+  policy: string;
+  limit: number | null;
+  remaining: number | null;
+  retryAfterSeconds: number | null;
+  client: string;
+  user: string | null;
+}
+
+/** Per-second outcome counts behind the live chart. */
+export interface TrafficBucket {
+  t: number;
+  allowed: number;
+  rejected: number;
+  error: number;
+}
+
+export interface TrafficResponse {
+  enabled: boolean;
+  capacity: number;
+  dropped: number;
+  serverTime: string;
+  events: TrafficEvent[];
+  buckets: TrafficBucket[];
+}
+
 export interface EndpointRule {
   id: string;
   method: string;

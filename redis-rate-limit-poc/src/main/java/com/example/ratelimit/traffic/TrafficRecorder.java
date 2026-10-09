@@ -188,12 +188,15 @@ public class TrafficRecorder {
         };
     }
 
-    /** 203.0.113.42 becomes 203.0.113.x; IPv6 keeps only its first two groups. */
+    /** 203.0.113.42 becomes 203.0.113.x; IPv6 keeps only its first two groups; loopback is "localhost". */
     static String maskIp(String ip) {
         if (ip == null || ip.isBlank()) {
             return "unknown";
         }
         var value = ip.startsWith("::ffff:") ? ip.substring(7) : ip;
+        if (value.equals("::1") || value.equals("0:0:0:0:0:0:0:1") || value.startsWith("127.")) {
+            return "localhost";
+        }
         if (value.contains(":")) {
             var parts = value.split(":");
             return (parts.length > 1 ? parts[0] + ":" + parts[1] : parts[0]) + "::x";

@@ -86,7 +86,7 @@ class TrafficApiTest {
         var event = events.get(0);
         assertThat(event.get("outcome")).isEqualTo("ALLOWED");
         assertThat(event.get("method")).isEqualTo("GET");
-        assertThat((String) event.get("client")).matches(".*(\\.x|::x)");
+        assertThat((String) event.get("client")).matches("localhost|.*(\\.x|::x)");
         assertThat((String) event.get("user")).startsWith("u-").doesNotContain("alice");
         // Nothing sensitive is stored: not the credentials, not the full address.
         var raw = event.toString();
@@ -116,7 +116,8 @@ class TrafficApiTest {
         assertThat(TrafficRecorder.maskIp("203.0.113.42")).isEqualTo("203.0.113.x");
         assertThat(TrafficRecorder.maskIp("::ffff:10.1.2.3")).isEqualTo("10.1.2.x");
         assertThat(TrafficRecorder.maskIp("2001:db8:85a3::8a2e:370:7334")).isEqualTo("2001:db8::x");
-        assertThat(TrafficRecorder.maskIp("0:0:0:0:0:0:0:1")).isEqualTo("0:0::x");
+        assertThat(TrafficRecorder.maskIp("0:0:0:0:0:0:0:1")).isEqualTo("localhost");
+        assertThat(TrafficRecorder.maskIp("127.0.0.1")).isEqualTo("localhost");
         assertThat(TrafficRecorder.maskIp(null)).isEqualTo("unknown");
     }
 

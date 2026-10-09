@@ -4,6 +4,7 @@ import { adminGuard } from './admin-guard';
 import { AdminLoginComponent } from './features/admin/admin-login.component';
 import { AuditPageComponent } from './features/admin/audit-page.component';
 import { PoliciesPageComponent } from './features/admin/policies-page.component';
+import { TrafficPageComponent } from './features/traffic/traffic-page.component';
 import { OverviewPageComponent } from './features/overview/overview-page.component';
 
 /**
@@ -13,6 +14,7 @@ import { OverviewPageComponent } from './features/overview/overview-page.compone
 export const routes: Routes = [
   { path: '', pathMatch: 'full', redirectTo: 'overview' },
   { path: 'overview', component: OverviewPageComponent, canActivate: [adminGuard], title: 'RateGuard — Overview' },
+  { path: 'traffic', component: TrafficPageComponent, canActivate: [adminGuard], title: 'RateGuard — Traffic' },
   { path: 'policies', component: PoliciesPageComponent, canActivate: [adminGuard], title: 'RateGuard — Policies' },
   { path: 'audit', component: AuditPageComponent, canActivate: [adminGuard], title: 'RateGuard — Audit' },
   { path: 'admin/login', component: AdminLoginComponent, title: 'RateGuard — Sign in' },

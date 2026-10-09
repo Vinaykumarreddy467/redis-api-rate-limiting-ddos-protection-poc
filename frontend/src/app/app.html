@@ -31,6 +31,7 @@
 @if (store.loggedIn()) {
   <nav class="app-nav" aria-label="Console sections">
     <a routerLink="/overview" routerLinkActive="active" ariaCurrentWhenActive="page">Overview</a>
+    <a routerLink="/traffic" routerLinkActive="active" ariaCurrentWhenActive="page">Traffic</a>
     <a routerLink="/policies" routerLinkActive="active" ariaCurrentWhenActive="page">Policies</a>
     <a routerLink="/audit" routerLinkActive="active" ariaCurrentWhenActive="page">Audit</a>
   </nav>
@@ -43,6 +44,6 @@
 <footer>
   <p>
     RateGuard is a local demonstration console for the Redis rate-limiting POC. It exposes no Redis
-    keys, client addresses, usernames or credentials.
+    keys or credentials; client addresses are masked and usernames are hashed.
   </p>
 </footer>

@@ -3,16 +3,15 @@ import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { StatusService } from '../../core/status.service';
 import { AdminStore } from '../../core/admin-store.service';
 import { DashboardPageComponent } from '../dashboard/dashboard-page.component';
-import { RequestDemoComponent } from '../request-demo/request-demo.component';
 
 /**
- * Read-only landing page: service health, cumulative request counters, the active policy snapshot,
- * and the explicitly user-triggered request demo. Nothing here writes.
+ * Read-only landing page: service health, cumulative request counters and the active policy snapshot.
+ * Nothing here writes. The request tester and live traffic live on the Traffic page.
  */
 @Component({
   selector: 'app-overview-page',
   standalone: true,
-  imports: [DashboardPageComponent, RequestDemoComponent],
+  imports: [DashboardPageComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './overview-page.component.html',
 })

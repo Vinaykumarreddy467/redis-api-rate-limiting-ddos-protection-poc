@@ -17,6 +17,7 @@ import {
   PolicyGroupEdit,
   PolicyEdit,
   ProjectionRepairResult,
+  TrafficResponse,
 } from './admin-models';
 
 const REQUEST_TIMEOUT_MS = 8000;
@@ -105,6 +106,10 @@ export class AdminApiService {
     return this.authed<void>('DELETE', `/policies/${encodeURIComponent(id)}`).pipe(
       map((result) => (isAdminError(result) ? result : { deleted: true as const })),
     );
+  }
+
+  traffic(since: number, seconds = 60, limit = 200): Observable<TrafficResponse | AdminApiError> {
+    return this.authed<TrafficResponse>('GET', `/traffic?since=${since}&seconds=${seconds}&limit=${limit}`);
   }
 
   audit(limit = 50): Observable<AuditRecord[] | AdminApiError> {
