@@ -1,16 +1,19 @@
 <section aria-labelledby="policies-heading">
   <div class="page-head">
     <div>
-      <h2 id="policies-heading">Policy groups and legacy policies</h2>
+      <h2 id="policies-heading">Policy groups</h2>
       <p class="page-sub">
-        Manage grouped endpoints and shared scope rules. Legacy policy controls remain available during migration.
+        A group bundles endpoints with their rate-limit rules. A request must pass every rule that matches it,
+        and a denial charges nothing.
       </p>
     </div>
     <button type="button" class="btn-primary" (click)="onCreateGroup()">Create policy group</button>
   </div>
 
-    <section class="panel" aria-label="Policy groups">
-    <div class="page-head"><div><h3>Policy groups</h3><p class="help">Groups and global scope rules are read from shared Redis.</p></div></div>
+  @if (store.actionError(); as actionError) { <p class="alert alert-bad" role="alert">{{ actionError }}</p> }
+  @if (store.actionInfo(); as actionInfo) { <p class="alert alert-ok" role="status">{{ actionInfo }}</p> }
+
+  <section class="panel" aria-label="Policy groups">
     @if (store.groupsState().error; as groupsError) {
       <p class="alert alert-bad" role="alert">Groups could not be loaded: {{ groupsError }}</p>
       <button type="button" class="btn-secondary" (click)="store.loadGroups()">Retry groups</button>
@@ -53,134 +56,59 @@
     }
   </section>
 
-  @if (store.actionError(); as actionError) { <p class="alert alert-bad" role="alert">{{ actionError }}</p> }
-  @if (store.actionInfo(); as actionInfo) { <p class="alert alert-ok" role="status">{{ actionInfo }}</p> }
-
-  <section class="panel" aria-label="Legacy policies">
-    <div class="page-head"><div><h3>Legacy policies</h3><p class="help">Retained during migration; these continue to apply alongside group rules.</p></div>
-      <button type="button" class="btn-secondary" (click)="onCreate()">Create legacy policy</button>
-    </div>
-
-  @if (store.capabilitiesState().error; as capabilitiesError) {
-    <p class="alert alert-bad" role="alert">
-      Algorithm and scope options unavailable: {{ capabilitiesError }}
-    </p>
-    <button type="button" class="btn-secondary" (click)="store.loadCapabilities()">Retry capabilities</button>
-  } @else if (!store.capabilitiesState().loaded) {
-    <p class="loading" role="status">Loading capabilities&#8230;</p>
-  } @else if (store.capabilities(); as caps) {
-    <p class="note">
-      <strong>Composition:</strong> {{ caps.composition }} <strong>Topology:</strong> {{ caps.topology }}
-      A request must pass every policy that matches it, and a denial charges nothing.
-    </p>
-  }
-
-  @if (store.actionError(); as error) {
-    <p class="alert alert-bad" role="alert">{{ error }}</p>
-  }
-  @if (store.actionInfo(); as info) {
-    <p class="alert alert-ok" role="status">{{ info }}</p>
-  }
-
-  <div class="toolbar">
-    <label class="grow">
-      <span class="visually-hidden">Filter policies</span>
-      <input
-        type="search"
-        name="policy-filter"
-        placeholder="Filter by id, route, or algorithm"
-        [ngModel]="filter()"
-        (ngModelChange)="filter.set($event)"
-      />
-    </label>
-    <label>
-      <span class="visually-hidden">Filter by scope</span>
-      <select name="policy-scope" [ngModel]="scopeFilter()" (ngModelChange)="scopeFilter.set($event)">
-        <option value="">All scopes</option>
-        @for (scope of scopeOptions(); track scope) {
-          <option [value]="scope">{{ scope }}</option>
-        }
-      </select>
-    </label>
-    <p class="count" role="status">
-      {{ filtered().length }} of {{ policies().length }} legacy policies
-    </p>
-  </div>
-
   @if (store.policiesState().error; as policiesError) {
     <p class="alert alert-bad" role="alert">Policies could not be loaded: {{ policiesError }}</p>
     <button type="button" class="btn-secondary" (click)="store.loadPolicies()" [disabled]="store.busy()">
       Retry policies
     </button>
   }
-  @if (!store.policiesState().loaded) {
-    <p class="loading" role="status">Loading policies&#8230;</p>
-  } @else if (policies().length === 0) {
-    <p class="empty">
-      No legacy policies are stored. Group-based policies can still be managed above.
-    </p>
-  } @else if (filtered().length === 0) {
-    <p class="empty">No policy matches this filter. Clear it to see all {{ policies().length }}.</p>
-  } @else {
-    <table class="table">
-      <thead>
-        <tr>
-          <th scope="col">Policy</th>
-          <th scope="col">Route</th>
-          <th scope="col">Algorithm</th>
-          <th scope="col">Scope</th>
-          <th scope="col">Parameters</th>
-          <th scope="col">State</th>
-          <th scope="col"><span class="visually-hidden">Actions</span></th>
-        </tr>
-      </thead>
-      <tbody>
-        @for (policy of filtered(); track policy.id) {
+
+  @if (legacyPolicies().length > 0) {
+    <section class="panel" aria-label="Legacy policies still enforced">
+      <h3>Legacy policies still enforced</h3>
+      <p class="help">
+        These pre-date policy groups. They still apply alongside group rules but can no longer be created or
+        edited. Re-create what you need as a group, then delete them here; this panel disappears when none remain.
+      </p>
+      <table class="table">
+        <thead>
           <tr>
-            <td data-label="Policy">
-              @if (policy.source === 'GROUP' || policy.source === 'GLOBAL') {
-                <strong>{{ policy.name }}</strong>
-                <span class="chip">{{ policy.source === 'GROUP' ? 'group rule' : 'global rule' }}</span>
-                <br /><code [attr.title]="policy.id">{{ policy.id.slice(0, 10) }}…</code>
-              } @else {
-                <code>{{ policy.id }}</code>
-              }
-            </td>
-            <td data-label="Route"><code>{{ policy.method }} {{ policy.path ?? '(global)' }}</code></td>
-            <td data-label="Algorithm">{{ policy.algorithm }}</td>
-            <td data-label="Scope">{{ policy.scope }}</td>
-            <td data-label="Parameters">{{ policy.parameterSummary }}</td>
-            <td data-label="State">
-              <span class="chip" [class.chip-on]="policy.enabled" [class.chip-off]="!policy.enabled">
-                {{ policy.enabled ? 'On' : 'Off' }} &middot; v{{ policy.version }}
-              </span>
-            </td>
-            <td class="row-actions">
-              <button type="button" class="btn-secondary" (click)="onEdit(policy)">Edit</button>
-              <button
-                type="button"
-                class="btn-secondary"
-                (click)="onToggleEnabled(policy)"
-                [disabled]="store.busy()"
-              >
-                {{ policy.enabled ? 'Disable' : 'Enable' }}
-              </button>
-              <button type="button" class="btn-secondary" (click)="onProbe(policy)" [disabled]="probeRunning()">
-                Probe
-              </button>
-              @if (confirmDeleteId() === policy.id) {
-                <button type="button" class="btn-danger" (click)="onDelete(policy)" [disabled]="store.busy()">
-                  Confirm delete
-                </button>
-                <button type="button" class="btn-ghost" (click)="cancelDelete()">Cancel</button>
-              } @else {
-                <button type="button" class="btn-danger-ghost" (click)="armDelete(policy.id)">Delete</button>
-              }
-            </td>
+            <th scope="col">Policy</th>
+            <th scope="col">Route</th>
+            <th scope="col">Limit</th>
+            <th scope="col">State</th>
+            <th scope="col"><span class="visually-hidden">Actions</span></th>
           </tr>
-        }
-      </tbody>
-     </table>
+        </thead>
+        <tbody>
+          @for (policy of legacyPolicies(); track policy.id) {
+            <tr>
+              <td data-label="Policy"><code>{{ policy.id }}</code></td>
+              <td data-label="Route"><code>{{ policy.method }} {{ policy.path ?? '(global)' }}</code></td>
+              <td data-label="Limit">{{ policy.parameterSummary }}</td>
+              <td data-label="State">
+                <span class="chip" [class.chip-on]="policy.enabled" [class.chip-off]="!policy.enabled">
+                  {{ policy.enabled ? 'On' : 'Off' }} &middot; v{{ policy.version }}
+                </span>
+              </td>
+              <td class="row-actions">
+                <button type="button" class="btn-secondary" (click)="onToggleEnabled(policy)" [disabled]="store.busy()">
+                  {{ policy.enabled ? 'Disable' : 'Enable' }}
+                </button>
+                @if (confirmDeleteId() === policy.id) {
+                  <button type="button" class="btn-danger" (click)="onDelete(policy)" [disabled]="store.busy()">
+                    Confirm delete
+                  </button>
+                  <button type="button" class="btn-ghost" (click)="cancelDelete()">Cancel</button>
+                } @else {
+                  <button type="button" class="btn-danger-ghost" (click)="armDelete(policy.id)">Delete</button>
+                }
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </section>
   }
 
   @if (store.exemptionsState().error; as exemptionsError) {
@@ -189,9 +117,12 @@
       Retry exemptions
     </button>
   } @else if (store.exemptions().length > 0) {
-    <div class="panel" role="region" aria-label="Rate-limit exemptions">
+    <section class="panel" aria-label="Rate-limit exemptions">
       <h3>Rate-limit exemptions</h3>
-      <p class="help">These routes bypass all rate-limit policies, including GLOBAL and APPLICATION.</p>
+      <p class="help">
+        These routes bypass all rate-limit policies, including GLOBAL and APPLICATION. New exemptions are set per
+        endpoint inside a group.
+      </p>
       <table class="table">
         <thead>
           <tr>
@@ -218,63 +149,9 @@
           }
         </tbody>
       </table>
-    </div>
+    </section>
   }
 
-  @if (probePolicyId(); as probeId) {
-    @if (policyById().get(probeId); as policy) {
-      <div class="panel" role="region" aria-label="Policy probe">
-        <h3>Probe {{ policy.id }}</h3>
-        <p class="help">
-          Sends at most 30 sequential requests to
-          <code>{{ policy.method }} {{ policy.path ?? '(global)' }}</code>. Nothing is sent until you
-          press Start.
-        </p>
-        @if (!probeRunning() && !probeSummary()) {
-          <div class="row">
-            <label>
-              Requests (max 30)
-              <input
-                type="number"
-                name="probe-count"
-                min="1"
-                max="30"
-                [ngModel]="probeCount()"
-                (ngModelChange)="probeCount.set($event)"
-              />
-            </label>
-            <button type="button" class="btn-primary" (click)="onProbeStart(policy)">Start probe</button>
-          </div>
-        }
-        @if (probeRunning()) {
-          <p role="status">Sending probe traffic&#8230;</p>
-          <button type="button" class="btn-secondary" (click)="onProbeCancel()">Cancel</button>
-        }
-        @if (probeSummary(); as summary) {
-          <p>
-            Sent {{ summary.totalSent }}: {{ summary.success }} allowed, {{ summary.rejected }} rejected.
-            @if (summary.first429Index !== null) {
-              First 429 at request #{{ summary.first429Index }}.
-            } @else {
-              No 429 in this run.
-            }
-            @if (summary.lastRejection) {
-              Retry-After {{ summary.lastRejection.headers.retryAfter }}s on policy
-              {{ summary.lastRejection.headers.policy }}.
-            }
-          </p>
-          @if (probeWindowNote(); as note) {
-            <p class="help">{{ note }}</p>
-          }
-          <button type="button" class="btn-secondary" (click)="closeProbe()">Close</button>
-        }
-      </div>
-    }
-  }
-
-  @if (editorOpen()) {
-    <app-policy-editor [policyId]="editingId()" (closed)="onEditorClosed()" (exemptionSaved)="onExemptionSaved()" />
-  }
   @if (groupEditorOpen()) {
     @if (editingGroupId(); as groupId) {
       @if (groupById(groupId); as group) { <app-policy-group-editor [group]="group" (closed)="groupEditorOpen.set(false)" /> }

@@ -149,22 +149,46 @@ describe('PoliciesPageComponent', () => {
     await settle();
   };
 
+  const buttonLabels = () =>
+    Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button')).map((b) => b.textContent?.trim());
+
   it('shows a loading state before the first response arrives', () => {
-    expect(text()).toContain('Loading policies');
+    expect(text()).toContain('Loading policy groups');
   });
 
-  it('lists policies with algorithm, scope and humanized parameters', async () => {
+  it('lists legacy policies that are still enforced, with humanized parameters', async () => {
     await loadWorkspace();
-    expect(text()).toContain('products-read');
-    expect(text()).toContain('100 per 1 minute');
-    expect(text()).toContain('FIXED_WINDOW');
-    expect(text()).toContain('v3');
-    expect(text()).not.toContain('PT1M');
+    const panel = query('[aria-label="Legacy policies still enforced"]')!;
+    expect(panel).not.toBeNull();
+    expect(panel.textContent).toContain('products-read');
+    expect(panel.textContent).toContain('100 per 1 minute');
+    expect(panel.textContent).toContain('v3');
+    expect(panel.textContent).not.toContain('PT1M');
   });
 
-  it('explains an empty store instead of rendering a bare table', async () => {
+  it('offers no way to create, edit or probe a legacy policy', async () => {
+    await loadWorkspace();
+    const labels = buttonLabels();
+    expect(labels.some((label) => label?.includes('legacy policy'))).toBe(false);
+    expect(labels).not.toContain('Edit');
+    expect(labels).not.toContain('Probe');
+    expect(query('[role="dialog"]')).toBeNull();
+    // Only clean-up actions remain.
+    expect(labels).toContain('Disable');
+    expect(labels).toContain('Delete');
+  });
+
+  it('hides the legacy panel when none exist, and ignores group and global rules', async () => {
     await loadWorkspace([]);
-    expect(text()).toContain('No legacy policies are stored');
+    expect(text()).not.toContain('Legacy policies');
+
+    TestBed.inject(AdminStore).policies.set([
+      { ...POLICIES[0], id: 'p-abc', source: 'GROUP' },
+      { ...POLICIES[1], id: 'p-def', source: 'GLOBAL' },
+    ] as never);
+    fixture.detectChanges();
+    await settle();
+    expect(text()).not.toContain('Legacy policies');
   });
 
   it('reports and retries each failed section on its own', async () => {
@@ -176,23 +200,18 @@ describe('PoliciesPageComponent', () => {
     expect(text()).toContain('HTTP 500');
     const retries = Array.from(
       (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLButtonElement>('button'),
-    ).filter((b) => ['Retry capabilities', 'Retry policies', 'Retry exemptions'].includes(b.textContent?.trim() ?? ''));
-    expect(retries.map((b) => b.textContent?.trim())).toEqual([
-      'Retry capabilities',
-      'Retry policies',
-      'Retry exemptions',
-    ]);
+    ).filter((b) => ['Retry policies', 'Retry exemptions'].includes(b.textContent?.trim() ?? ''));
+    expect(retries.map((b) => b.textContent?.trim())).toEqual(['Retry policies', 'Retry exemptions']);
 
-    // Retrying capabilities must not re-request the other two sections.
+    // Retrying policies must not re-request exemptions.
     retries[0].click();
     fixture.detectChanges();
     await settle();
-    http.expectOne(`${BASE}/capabilities`);
-    http.expectNone((req) => req.url === `${BASE}/policies`);
+    http.expectOne(`${BASE}/policies`);
     http.expectNone((req) => req.url === `${BASE}/exemptions`);
   });
 
-  it('keeps policies and capabilities visible when only exemptions fail', async () => {
+  it('keeps legacy policies visible when only exemptions fail', async () => {
     http.expectOne(`${BASE}/capabilities`).flush(CAPABILITIES);
     http.expectOne(`${BASE}/policies`).flush(POLICIES);
     http.expectOne(`${BASE}/exemptions`).flush('', { status: 500, statusText: 'Server Error' });
@@ -201,80 +220,6 @@ describe('PoliciesPageComponent', () => {
     // The exemption failure is reported on its own and hides nothing else.
     expect(text()).toContain('Exemptions could not be loaded');
     expect(text()).toContain('products-read');
-    expect(text()).toContain('Composition:');
-  });
-
-  it('does not present empty algorithm and scope selects when capabilities fail', async () => {
-    http.expectOne(`${BASE}/capabilities`).flush('', { status: 500, statusText: 'Server Error' });
-    http.expectOne(`${BASE}/policies`).flush(POLICIES);
-    http.expectOne(`${BASE}/exemptions`).flush([]);
-    http.expectOne(`${BASE}/groups`).flush([]);
-    http.expectOne(`${BASE}/global-rules`).flush(GLOBAL_RULES);
-    await settle();
-    Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('Create legacy policy'))!.click();
-    fixture.detectChanges(); await settle();
-
-    expect(query('select[name="f-algorithm"]')).toBeNull();
-    expect(query('select[name="f-scope"]')).toBeNull();
-    expect(text()).toContain('Retry capabilities');
-
-    // Saving is refused rather than sending invented algorithm/scope values.
-    const id = query<HTMLInputElement>('input[name="f-id"]')!;
-    id.value = 'new-policy';
-    id.dispatchEvent(new Event('input'));
-    const path = query<HTMLInputElement>('input[name="f-path"]')!;
-    path.value = '/api/new';
-    path.dispatchEvent(new Event('input'));
-    await click('button[type="submit"]');
-    expect(text()).toContain('could not be loaded');
-    http.expectNone((req) => req.url === `${BASE}/policies` && req.method === 'POST');
-  });
-
-  it('filters the list without another request', async () => {
-    await loadWorkspace();
-    const filter = query<HTMLInputElement>('input[name="policy-filter"]')!;
-    filter.value = 'orders';
-    filter.dispatchEvent(new Event('input'));
-    await settle();
-
-    expect(text()).toContain('order-create');
-    expect(text()).not.toContain('products-read');
-    expect(text()).toContain('1 of 2 legacy policies');
-  });
-
-  it('keeps the editor closed until Create policy is pressed', async () => {
-    await loadWorkspace();
-    expect(query('[role="dialog"]')).toBeNull();
-    expect(text()).not.toContain('Algorithm and scope');
-  });
-
-  it('opens a capability-driven editor that refuses an unimplemented algorithm', async () => {
-    await loadWorkspace();
-    Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('Create legacy policy'))!.click();
-    fixture.detectChanges(); await settle();
-    expect(query('[role="dialog"]')).not.toBeNull();
-    // Only enforced algorithms are selectable; the unimplemented one is visibly disabled.
-    const options = Array.from(
-      (fixture.nativeElement as HTMLElement).querySelectorAll('select[name="f-algorithm"] option'),
-    );
-    expect(options.some((o) => (o as HTMLOptionElement).disabled)).toBe(true);
-
-    const id = query<HTMLInputElement>('input[name="f-id"]')!;
-    id.value = 'new-policy';
-    id.dispatchEvent(new Event('input'));
-    const path = query<HTMLInputElement>('input[name="f-path"]')!;
-    path.value = '/api/new';
-    path.dispatchEvent(new Event('input'));
-    const algo = query<HTMLSelectElement>('select[name="f-algorithm"]')!;
-    algo.value = 'TOKEN_BUCKET';
-    algo.dispatchEvent(new Event('change'));
-    await settle();
-
-    await click('button[type="submit"]');
-    expect(text()).toContain('not enforced by this build');
-    http.expectNone((req) => req.url === `${BASE}/policies` && req.method === 'POST');
   });
 
   it('requires a two-step confirmation before deleting', async () => {
@@ -306,64 +251,6 @@ describe('PoliciesPageComponent', () => {
     http.expectOne(`${BASE}/exemptions`).flush([]);
     await settle();
     expect(text()).not.toContain('Rate-limit exemptions');
-  });
-
-  it('exemption checkbox hides rate-limit fields and posts to the exemptions endpoint', async () => {
-    await loadWorkspace();
-    Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('Create legacy policy'))!.click();
-    fixture.detectChanges(); await settle();
-
-    const id = query<HTMLInputElement>('input[name="f-id"]')!;
-    id.value = 'ex-health';
-    id.dispatchEvent(new Event('input'));
-    const path = query<HTMLInputElement>('input[name="f-path"]')!;
-    path.value = '/api/exempt-only';
-    path.dispatchEvent(new Event('input'));
-
-    const exempt = query<HTMLInputElement>('input[name="f-exempt"]')!;
-    exempt.click();
-    await settle();
-    // Rate-limit specifics are irrelevant to an exemption, so they disappear.
-    expect(query('select[name="f-algorithm"]')).toBeNull();
-
-    await click('button[type="submit"]');
-    http
-      .expectOne((req) => req.url === `${BASE}/exemptions` && req.method === 'POST')
-      .flush(EXEMPTIONS[0]);
-    await settle();
-    http.expectOne(`${BASE}/exemptions`).flush(EXEMPTIONS);
-    // Saving an exemption refreshes the policy-derived request targets too.
-    http.expectOne(`${BASE}/demo-routes`).flush({ targets: [], policies: [] });
-    await settle();
-    expect(query('[role="dialog"]')).toBeNull();
-    expect(text()).toContain('/api/exempt-only');
-  });
-
-  it('closes after exemption creation succeeds even if the subsequent refresh fails', async () => {
-    await loadWorkspace();
-    Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('Create legacy policy'))!.click();
-    fixture.detectChanges(); await settle();
-
-    const id = query<HTMLInputElement>('input[name="f-id"]')!;
-    id.value = 'ex-refresh-fail'; id.dispatchEvent(new Event('input'));
-    const path = query<HTMLInputElement>('input[name="f-path"]')!;
-    path.value = '/api/exempt-refresh-fail'; path.dispatchEvent(new Event('input'));
-    query<HTMLInputElement>('input[name="f-exempt"]')!.click();
-    await settle();
-
-    query<HTMLButtonElement>('button[type="submit"]')!.click(); fixture.detectChanges();
-    http.expectOne((req) => req.url === `${BASE}/exemptions` && req.method === 'POST')
-      .flush({ ...EXEMPTIONS[0], id: 'ex-refresh-fail', path: '/api/exempt-refresh-fail' });
-    await settle();
-    expect(query('[role="dialog"]')).toBeNull();
-    http.expectOne(`${BASE}/exemptions`).flush('', { status: 500, statusText: 'Server Error' });
-    http.expectOne(`${BASE}/demo-routes`).flush('', { status: 500, statusText: 'Server Error' });
-    await settle();
-    expect(query('[role="dialog"]')).toBeNull();
-    expect(TestBed.inject(AdminStore).actionInfo()).toContain('Exemption ex-refresh-fail created.');
-    expect(TestBed.inject(AdminStore).exemptionsState().error).toBe('HTTP 500');
   });
 
   it('lists groups and shows enabled status and endpoint details', async () => {
