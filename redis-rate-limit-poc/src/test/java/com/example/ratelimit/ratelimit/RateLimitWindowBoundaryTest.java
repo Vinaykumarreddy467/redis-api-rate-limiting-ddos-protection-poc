@@ -141,6 +141,12 @@ class RateLimitWindowBoundaryTest {
                     public java.util.List<com.example.ratelimit.policy.ExemptionDocument> findAll() {
                         return java.util.List.of();
                     }
+                },
+                new com.example.ratelimit.policy.EndpointExemptionService(null) {
+                    @Override
+                    public boolean isExempt(String method, String path) {
+                        return false;
+                    }
                 });
     }
 

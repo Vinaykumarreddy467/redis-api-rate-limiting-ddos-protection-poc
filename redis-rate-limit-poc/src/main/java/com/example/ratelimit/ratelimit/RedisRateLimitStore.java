@@ -40,6 +40,22 @@ public class RedisRateLimitStore implements RateLimitStore {
             """, List.class);
 
     /** Read-only counterpart: returns {count, pttlMillis} without creating or changing quota state. */
+    /**
+     * Control-plane failed-login tracker. KEYS[1]=failure counter, KEYS[2]=lock key;
+     * ARGV: max failures, counting window ms, lockout seconds. Returns 1 when this failure triggered a lock.
+     * The counter TTL is set in the same script as the INCR, and the lock lasts the full lockout.
+     */
+    private static final RedisScript<Long> CP_FAILURE = new DefaultRedisScript<>("""
+            local c = redis.call('INCR', KEYS[1])
+            if c == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[2]) end
+            if c >= tonumber(ARGV[1]) then
+              redis.call('SET', KEYS[2], '1', 'EX', ARGV[3])
+              redis.call('DEL', KEYS[1])
+              return 1
+            end
+            return 0
+            """, Long.class);
+
     private static final RedisScript<List> PEEK = new DefaultRedisScript<>("""
             local raw = redis.call('GET', KEYS[1])
             local count = 0
@@ -261,6 +277,31 @@ public class RedisRateLimitStore implements RateLimitStore {
             // Retry-After comes from the live TTL, so it always covers the rest of the real window.
             long retryAfter = Math.max(1, Math.ceilDiv(result.get(1), 1000));
             return RateLimitDecision.reject(policy.limit(), Duration.ofSeconds(retryAfter));
+        } catch (DataAccessException e) {
+            throw new RateLimitStoreUnavailableException("redis unavailable", e);
+        }
+    }
+
+    @Override
+    public Duration controlPlaneLockRemaining(String ip) {
+        try {
+            Long ttl = redis.getExpire(keyPrefix + ":cp:lock:" + hash(ip), java.util.concurrent.TimeUnit.MILLISECONDS);
+            if (ttl == null) {
+                throw new RateLimitStoreUnavailableException("redis returned no lock ttl", null);
+            }
+            return ttl > 0 ? Duration.ofMillis(ttl) : Duration.ZERO;
+        } catch (DataAccessException e) {
+            throw new RateLimitStoreUnavailableException("redis unavailable", e);
+        }
+    }
+
+    @Override
+    public void controlPlaneRecordFailure(String ip, int maxFailures, Duration countWindow, Duration lockout) {
+        try {
+            String id = hash(ip);
+            redis.execute(CP_FAILURE, List.of(keyPrefix + ":cp:fail:" + id, keyPrefix + ":cp:lock:" + id),
+                    String.valueOf(maxFailures), String.valueOf(countWindow.toMillis()),
+                    String.valueOf(Math.max(1, lockout.toSeconds())));
         } catch (DataAccessException e) {
             throw new RateLimitStoreUnavailableException("redis unavailable", e);
         }

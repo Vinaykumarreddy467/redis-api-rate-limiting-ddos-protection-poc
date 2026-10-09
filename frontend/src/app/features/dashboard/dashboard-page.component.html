@@ -74,21 +74,19 @@
       <thead>
           <tr>
             <th scope="col">Policy</th>
-            <th scope="col">Route</th>
-            <th scope="col">Method</th>
-            <th scope="col">Algorithm</th>
-            <th scope="col">Parameters</th>
-            <th scope="col">Scope</th>
-            <th scope="col">Redis failure mode</th>
+            <th scope="col">Endpoint</th>
+            <th scope="col">Limit</th>
+            <th scope="col">Applies to</th>
+            <th scope="col">If Redis fails</th>
             <th scope="col">State</th>
           </tr>
         </thead>
       <tbody>
         @if (policiesLoading()) {
-          <tr><td colspan="8" class="muted">Loading policies&hellip;</td></tr>
+          <tr><td colspan="6" class="muted">Loading policies&hellip;</td></tr>
         } @else if (policies().length === 0) {
           <tr>
-            <td colspan="8" class="muted">
+            <td colspan="6" class="muted">
               No policies are stored. Create one in the
               <a routerLink="/policies">Policies workspace</a>.
             </td>
@@ -96,11 +94,20 @@
         } @else {
           @for (policy of policies(); track policy.id) {
             <tr>
-              <td class="mono">{{ policy.id }}</td>
-              <td class="mono">{{ policy.path ?? '(every route)' }}</td>
-              <td>{{ policy.method }}</td>
-              <td>{{ policy.algorithm }}</td>
-              <td>{{ policy.parameterSummary || '—' }}</td>
+              <td class="policy-cell" [attr.title]="policy.id">
+                <span class="policy-name">{{ policy.source === 'GROUP' || policy.source === 'GLOBAL' ? policy.name : policy.id }}</span>
+                @if (policy.source === 'GROUP' || policy.source === 'GLOBAL') {
+                  <span class="tag">{{ policy.source === 'GROUP' ? 'group' : 'global' }}</span>
+                }
+              </td>
+              <td class="endpoint-cell">
+                <span class="method" [attr.data-method]="policy.method">{{ policy.method }}</span>
+                <span class="mono route">{{ policy.path ?? '(every route)' }}</span>
+              </td>
+              <td>
+                <span class="limit">{{ policy.parameterSummary || '—' }}</span>
+                <span class="sub">{{ algorithmLabel(policy.algorithm) }}</span>
+              </td>
               <td>{{ identityLabel(policy.scope) }}</td>
               <td>
                 <span
@@ -108,7 +115,10 @@
                   [class.closed]="policy.onRedisError === 'FAIL_CLOSED'"
                 >{{ policy.onRedisError === 'FAIL_CLOSED' ? 'Fail closed' : 'Fail open' }}</span>
               </td>
-              <td>{{ policy.enabled ? 'On' : 'Off' }} &middot; v{{ policy.version }}</td>
+              <td>
+                <span class="state" [class.off]="!policy.enabled">{{ policy.enabled ? 'On' : 'Off' }}</span>
+                <span class="sub">v{{ policy.version }}</span>
+              </td>
             </tr>
           }
         }

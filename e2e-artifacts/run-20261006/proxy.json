@@ -1,4 +1,0 @@
-{
-  "/api": { "target": "http://localhost:18080", "secure": false, "changeOrigin": false },
-  "/actuator": { "target": "http://localhost:18080", "secure": false, "changeOrigin": false }
-}

@@ -3,7 +3,7 @@ import { Observable, firstValueFrom } from 'rxjs';
 
 import { DemoRoute } from '../../core/demo-catalog';
 import { Credentials, DemoRequestResult, DemoRequestService } from '../../core/demo-request.service';
-import { DemoSummary } from '../../core/models';
+import { DemoSummary, ResponseEntry } from '../../core/models';
 
 /**
  * Bounded, sequential, cancellable demo execution.
@@ -18,6 +18,10 @@ export class DemoRunnerService {
   readonly running = signal(false);
   readonly sent = signal(0);
   readonly summary = signal<DemoSummary | null>(null);
+  /** Every response of the current (or last) run, appended the moment it arrives. */
+  readonly liveResponses = signal<ResponseEntry[]>([]);
+  /** Identifies the current run to the backend so its live traffic rows can be matched to these responses. */
+  readonly runId = signal<string | null>(null);
 
   async run(
     route: DemoRoute,
@@ -38,6 +42,7 @@ export class DemoRunnerService {
       completed: false,
       cancelled: false,
       inconclusive: false,
+      responses: [],
       lastRejection: null,
       lastError: null,
     };
@@ -46,6 +51,9 @@ export class DemoRunnerService {
     this.running.set(true);
     this.sent.set(0);
     this.summary.set(null);
+    this.liveResponses.set([]);
+    const runId = newRunId();
+    this.runId.set(runId);
     const startedAt = Date.now();
 
     try {
@@ -56,12 +64,23 @@ export class DemoRunnerService {
         }
 
         const result: DemoRequestResult = await firstValueFrom(
-          this.requests.send(route, credentials) as Observable<DemoRequestResult>,
+          this.requests.send(route, credentials, { runId, seq: index }) as Observable<DemoRequestResult>,
         );
         summary.totalSent += 1;
         summary.statuses[result.status] = (summary.statuses[result.status] ?? 0) + 1;
         this.sent.set(summary.totalSent);
         onProgress(summary.totalSent, requestedCount);
+
+        const entry: ResponseEntry = {
+          index,
+          status: result.status,
+          headers: result.headers,
+          body: result.body,
+          message: result.message,
+          transportError: result.transportError,
+        };
+        summary.responses.push(entry);
+        this.liveResponses.update((list) => [...list, entry]);
 
         if (result.status >= 200 && result.status < 300) {
           summary.success += 1;
@@ -69,13 +88,8 @@ export class DemoRunnerService {
           summary.rejected += 1;
           if (summary.first429Index === null) {
             summary.first429Index = index;
-            summary.lastRejection = {
-              index,
-              status: result.status,
-              headers: result.headers,
-              message: result.message,
-            };
           }
+          summary.lastRejection = entry;
         } else if (result.status === 404) {
           // A configured policy may name a path no handler serves. The filter already ran before
           // routing, so this response says nothing about the limit; keep going so a later 429 can
@@ -85,11 +99,7 @@ export class DemoRunnerService {
           // 401, 403, 503 or offline: the route is not behaving as this POC expects, so stop
           // rather than spending the remaining budget on a broken run.
           summary.error += 1;
-          summary.lastError = {
-            index,
-            status: result.status,
-            reason: result.transportError ?? `HTTP ${result.status}`,
-          };
+          summary.lastError = entry;
           break;
         }
       }
@@ -112,5 +122,15 @@ export class DemoRunnerService {
     this.cancel();
     this.sent.set(0);
     this.summary.set(null);
+    this.liveResponses.set([]);
+    this.runId.set(null);
   }
+}
+
+/** Short, URL-safe and unique enough to tell runs apart in the live feed. */
+function newRunId(): string {
+  const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID().replace(/-/g, '')
+    : Math.random().toString(36).slice(2) + Date.now().toString(36);
+  return `run-${random.slice(0, 8)}`;
 }

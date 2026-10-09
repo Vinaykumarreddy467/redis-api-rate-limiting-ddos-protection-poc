@@ -11,7 +11,13 @@ import {
   DemoRouteCatalogResponse,
   ExemptionEdit,
   ExemptionRecord,
+  GlobalScopeRules,
+  GlobalScopeRulesEdit,
+  PolicyGroup,
+  PolicyGroupEdit,
   PolicyEdit,
+  ProjectionRepairResult,
+  TrafficResponse,
 } from './admin-models';
 
 const REQUEST_TIMEOUT_MS = 8000;
@@ -102,6 +108,10 @@ export class AdminApiService {
     );
   }
 
+  traffic(since: number, seconds = 60, limit = 200): Observable<TrafficResponse | AdminApiError> {
+    return this.authed<TrafficResponse>('GET', `/traffic?since=${since}&seconds=${seconds}&limit=${limit}`);
+  }
+
   audit(limit = 50): Observable<AuditRecord[] | AdminApiError> {
     return this.authed<AuditRecord[]>('GET', `/audit?limit=${limit}`);
   }
@@ -123,6 +133,47 @@ export class AdminApiService {
 
   createExemption(edit: ExemptionEdit): Observable<AdminPolicy | AdminApiError> {
     return this.authed<AdminPolicy>('POST', '/exemptions', edit);
+  }
+
+  listGroups(): Observable<PolicyGroup[] | AdminApiError> {
+    return this.authed<PolicyGroup[]>('GET', '/groups');
+  }
+
+  getGroup(id: string): Observable<PolicyGroup | AdminApiError> {
+    return this.authed<PolicyGroup>('GET', `/groups/${encodeURIComponent(id)}`);
+  }
+
+  createGroup(edit: PolicyGroupEdit): Observable<PolicyGroup | AdminApiError> {
+    return this.authed<PolicyGroup>('POST', '/groups', edit);
+  }
+
+  updateGroup(id: string, edit: PolicyGroupEdit): Observable<PolicyGroup | AdminApiError> {
+    return this.authed<PolicyGroup>('PUT', `/groups/${encodeURIComponent(id)}`, edit);
+  }
+
+  deleteGroup(id: string): Observable<{ deleted: true } | AdminApiError> {
+    return this.authed<void>('DELETE', `/groups/${encodeURIComponent(id)}`).pipe(
+      map((result) => (isAdminError(result) ? result : { deleted: true as const })),
+    );
+  }
+
+  deleteEndpoint(groupId: string, endpointId: string): Observable<PolicyGroup | AdminApiError> {
+    return this.authed<PolicyGroup>(
+      'DELETE',
+      `/groups/${encodeURIComponent(groupId)}/endpoints/${encodeURIComponent(endpointId)}`,
+    );
+  }
+
+  repairGroup(id: string): Observable<ProjectionRepairResult | AdminApiError> {
+    return this.authed<ProjectionRepairResult>('POST', `/groups/${encodeURIComponent(id)}/repair`);
+  }
+
+  globalRules(): Observable<GlobalScopeRules | AdminApiError> {
+    return this.authed<GlobalScopeRules>('GET', '/global-rules');
+  }
+
+  updateGlobalRules(edit: GlobalScopeRulesEdit): Observable<GlobalScopeRules | AdminApiError> {
+    return this.authed<GlobalScopeRules>('PUT', '/global-rules', edit);
   }
 
   private authed<T>(method: string, path: string, body?: unknown): Observable<T | AdminApiError> {
@@ -172,8 +223,21 @@ export class AdminApiService {
     if (error.status === 0) {
       return { status: 0, code: 'unreachable', message: 'Backend unreachable.', problems: [] };
     }
-    const body = error.error as { error?: string; message?: string; problems?: string[] } | null;
+    const body = error.error as {
+      error?: string;
+      message?: string;
+      problems?: string[];
+      retryAfterSeconds?: number;
+    } | null;
+    let retryAfterSeconds: number | undefined;
+    if (error.status === 429 || error.status === 503) {
+      const header = Number(error.headers?.get('Retry-After'));
+      const fromBody = Number(body?.retryAfterSeconds);
+      if (error.headers?.get('Retry-After') != null && Number.isFinite(header)) retryAfterSeconds = header;
+      else if (body?.retryAfterSeconds != null && Number.isFinite(fromBody)) retryAfterSeconds = fromBody;
+    }
     return {
+      ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
       status: error.status,
       code: body?.error ?? 'http-error',
       message: body?.message ?? `HTTP ${error.status}`,

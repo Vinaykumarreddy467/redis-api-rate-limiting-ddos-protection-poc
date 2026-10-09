@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import com.example.ratelimit.config.RateLimitProperties;
 import com.example.ratelimit.ratelimit.RateLimitDecision;
@@ -88,7 +89,31 @@ class PolicyCompositionTest {
                 PolicyEnforcer.forExplicitPolicies(policies, store, properties.getOnRedisError()),
                 new RateLimitIdentityResolver(properties),
                 new RateLimitMetrics(new SimpleMeterRegistry()),
-                properties, new ObjectMapper(), Clock.systemUTC(), noExemptions());
+                properties, new ObjectMapper(), Clock.systemUTC(), noExemptions(),
+                new com.example.ratelimit.policy.EndpointExemptionService(null) {
+                    @Override
+                    public boolean isExempt(String method, String path) {
+                        return false;
+                    }
+                });
+    }
+
+    private RateLimitFilter groupFilter(PolicyGroup group, GlobalScopeRules globalRules,
+            List<PolicyDocument> compatibilityPolicies) {
+        var properties = new RateLimitProperties();
+        var managed = new ManagedPolicyStore(null, new ObjectMapper()) {
+            @Override public List<PolicyGroup> findAllGroups() { return List.of(group); }
+            @Override public Optional<GlobalScopeRules> findGlobalRules() { return Optional.of(globalRules); }
+            @Override public List<PolicyDocument> findAll() { return compatibilityPolicies; }
+        };
+        var projections = new ProjectionService();
+        var matcher = new PolicyMatcher(managed, properties, projections);
+        var enforcer = new PolicyEnforcer(matcher, store, properties);
+        return new RateLimitFilter(enforcer, new RateLimitIdentityResolver(properties),
+                new RateLimitMetrics(new SimpleMeterRegistry()), properties, new ObjectMapper(),
+                Clock.systemUTC(), noExemptions(), new EndpointExemptionService(null) {
+                    @Override public boolean isExempt(String method, String path) { return false; }
+                });
     }
 
     private static PolicyDocument doc(String id, String method, String path, Scope scope, int limit) {
@@ -163,7 +188,13 @@ class PolicyCompositionTest {
                 new RateLimitIdentityResolver(properties),
                 new RateLimitMetrics(new SimpleMeterRegistry()),
                 properties, new ObjectMapper(), Clock.systemUTC(),
-                exemptions);
+                exemptions,
+                new com.example.ratelimit.policy.EndpointExemptionService(null) {
+                    @Override
+                    public boolean isExempt(String method, String path) {
+                        return false;
+                    }
+                });
 
         assertThat(call(filterWithExemption, "GET", "/api/products", "203.0.113.1").getStatus()).isEqualTo(200);
         assertThat(call(filterWithExemption, "GET", "/api/products", "203.0.113.1").getStatus()).isEqualTo(200);
@@ -245,6 +276,37 @@ class PolicyCompositionTest {
                         List.of(new SimpleGrantedAuthority("ROLE_USER"))));
         assertThat(call(filter, "POST", "/api/a", "203.0.113.9").getStatus())
                 .as("bob has his own quota").isEqualTo(200);
+    }
+
+    @Test
+    void groupRulesComposeWithLegacyRulesWithoutChargingCompatibilityProjectionsTwice() throws Exception {
+        var endpointRules = List.of(
+                new ScopeRule(Scope.ENDPOINT, Algorithm.FIXED_WINDOW, Duration.ofMinutes(1), 10,
+                        null, null, null, null, null, null, null, null),
+                new ScopeRule(Scope.IP, Algorithm.FIXED_WINDOW, Duration.ofMinutes(1), 50,
+                        null, null, null, null, null, null, null, null));
+        var endpoint = new EndpointRule("ep-compose", "GET", "/api/products", "Products",
+                true, false, endpointRules);
+        var now = Instant.now();
+        var group = new PolicyGroup("group-compose", "Products", true, List.of(endpoint),
+                RateLimitProperties.FailureMode.FAIL_OPEN, 1, now, now, "test", List.of());
+        var globalRules = new GlobalScopeRules(List.of(
+                new ScopeRule(Scope.APPLICATION, Algorithm.FIXED_WINDOW, Duration.ofMinutes(1), 100,
+                        null, null, null, null, null, null, null, null),
+                new ScopeRule(Scope.GLOBAL, Algorithm.FIXED_WINDOW, Duration.ofMinutes(1), 200,
+                        null, null, null, null, null, null, null, null)),
+                RateLimitProperties.FailureMode.FAIL_OPEN, 1, now, now, "test", List.of());
+        var projections = new ProjectionService();
+        var compatibility = new java.util.ArrayList<PolicyDocument>();
+        compatibility.addAll(projections.projectGroup(group));
+        compatibility.addAll(projections.projectGlobalRules(globalRules));
+        compatibility.add(doc("legacy-products", "GET", "/api/products", Scope.IP, 500));
+        var groupFilter = groupFilter(group, globalRules, compatibility);
+
+        assertThat(call(groupFilter, "GET", "/api/products", "203.0.113.9").getStatus()).isEqualTo(200);
+        assertThat(store.consumes).as("two group scopes, two distinct global scopes, and one legacy policy")
+                .isEqualTo(5);
+        assertThat(store.counts).hasSize(5);
     }
 
 }

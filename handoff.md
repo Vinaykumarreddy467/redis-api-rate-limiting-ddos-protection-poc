@@ -322,6 +322,18 @@ requests, cancellable) that reuses the demo runner.
   by lease expiry; `leaseDuration` is the maximum request duration — a longer request may lose its
   permit. Saturation is 429, consistent with every other denial.
 
+### Policy group ids, validation and overlap rules
+
+- Group id = lowercase slug of the name (max 55 chars, numeric suffix on collision); endpoint id =
+  `ep-xxxxxxxx`. Both are server-generated and immutable. CREATE may pin an id matching
+  `^[a-z0-9][a-z0-9-]{0,62}$`; update with an endpoint id outside the group returns 400 "cannot be changed".
+- Overlapping routes (same path ignoring trailing slash, same method or `ANY`) return 400 `policy_invalid`,
+  within and across groups, checked only for routes the request adds or moves.
+- Malformed rule values (window, scope, algorithm, refillInterval, leaseDuration) return 400 `policy_invalid`, not 500.
+- Switching algorithm drops the previous algorithm's parameters.
+- `GET /policies` rows carry `source`: `POLICY`, `GROUP` or `GLOBAL`.
+- Console: Group id field removed (name is required); endpoint id is read-only; the edit-endpoint form scrolls into view.
+
 ### Release semantics
 
 Concurrency permits release in `finally` after the request completes, so success, error, and timeout
@@ -769,3 +781,18 @@ Only processes started for this QA were touched, each verified by listening port
 closed: JVM on 18099, dev server on 14200, container `ratelimit-qa-redis`. Live `:8080` (pid 10132),
 `:4200` (pid 13780) and container `ratelimit-poc-redis` were left running throughout, and the temporary
 build tree plus the throwaway-credential file were deleted.
+
+---
+
+## 2026-10-09 — policy group id rules, overlap rejection, rule validation
+
+**Changed** (commits `aec12cd`, `2561659`, `aa45e5c`): server-generated immutable group and endpoint ids
+(see section 5.6); overlapping routes rejected with 400 `policy_invalid`; malformed rule values return 400
+instead of 500; `GET /policies` rows carry `source`; switching algorithm drops old parameters; console
+Group id field removed, endpoint id read-only.
+
+**Verify:** run `PolicyAdminControllerTest` (backend, covers the new 400 paths) and the
+`policy-group-editor.component.spec.ts` / `request-demo.component.spec.ts` frontend specs. Not run as part of this doc update.
+
+**Open:** test counts in section 6 were not re-counted after these commits; section 5.6 is the only place
+the new id/validation rules are described.

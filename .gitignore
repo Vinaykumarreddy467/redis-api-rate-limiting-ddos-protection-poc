@@ -37,3 +37,16 @@ coverage/
 npm-debug.log
 .DS_Store
 Thumbs.db
+*.err
+tmp_diff.txt
+demo*.log
+
+# Local run output: logs, screenshots, e2e artifacts, generated graphs
+/screenshots/
+/e2e-artifacts/
+/graphify-out/
+frontend/logs/
+redis-rate-limit-poc/logs/
+frontend/tempenv.txt
+frontend/testout.txt
+e2e/node_modules/

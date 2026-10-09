@@ -188,9 +188,19 @@ public class DemoRouteCatalog {
 
         // A note from @DemoCallable describes the handler. Without one, the note has to explain the
         // target the console derived: a pathless policy's sample route, or a path nothing serves.
-        String note = route.note().isBlank()
-                ? (route.demoCallable ? "" : defaultNote(policy, pathless, route))
-                : route.note();
+        String note;
+        if (pathless) {
+            // Keep the global-policy explanation even when the sampled route supplies its own
+            // @DemoCallable note; operators need both the policy scope and replay-safety context.
+            note = defaultNote(policy, true, route);
+            if (!route.note().isBlank()) {
+                note += " " + route.note();
+            }
+        } else {
+            note = route.note().isBlank()
+                    ? (route.demoCallable ? "" : defaultNote(policy, false, route))
+                    : route.note();
+        }
 
         return new PolicyTarget(policyId, true, algorithmName(policy), policy.scope(), summary(policy),
                 policy.method(), policy.path(), method, concretePath, route.sampleQuery(),

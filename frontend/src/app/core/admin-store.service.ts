@@ -6,11 +6,16 @@ import { AdminApiService, isAdminError } from './admin-api.service';
 import { parseDemoTargets } from './demo-catalog';
 import {
   AdminApiError,
+  describeThrottle,
   AdminPolicy,
   AuditRecord,
   Capabilities,
   ExemptionEdit,
   ExemptionRecord,
+  GlobalScopeRules,
+  GlobalScopeRulesEdit,
+  PolicyGroup,
+  PolicyGroupEdit,
   PolicyEdit,
   PolicyTargetRecord,
 } from './admin-models';
@@ -48,12 +53,16 @@ export class AdminStore {
   readonly policiesState = signal<SectionState>({ loaded: false, error: null });
   readonly exemptionsState = signal<SectionState>({ loaded: false, error: null });
   readonly demoRoutesState = signal<SectionState>({ loaded: false, error: null });
+  readonly groupsState = signal<SectionState>({ loaded: false, error: null });
+  readonly globalRulesState = signal<SectionState>({ loaded: false, error: null });
   /** One entry per managed policy, refreshed whenever policies change. */
   readonly demoTargets = signal<PolicyTargetRecord[]>([]);
 
   readonly capabilities = signal<Capabilities | null>(null);
   readonly policies = signal<AdminPolicy[]>([]);
   readonly exemptions = signal<ExemptionRecord[]>([]);
+  readonly groups = signal<PolicyGroup[]>([]);
+  readonly globalRules = signal<GlobalScopeRules | null>(null);
   readonly audit = signal<AuditRecord[]>([]);
   readonly auditLimit = signal<(typeof AUDIT_LIMITS)[number]>(50);
 
@@ -91,6 +100,8 @@ export class AdminStore {
     this.capabilities.set(null);
     this.policies.set([]);
     this.exemptions.set([]);
+    this.groups.set([]);
+    this.globalRules.set(null);
     this.demoTargets.set([]);
     this.audit.set([]);
     this.auditLimit.set(50);
@@ -98,6 +109,8 @@ export class AdminStore {
     this.policiesState.set(NOT_LOADED);
     this.exemptionsState.set(NOT_LOADED);
     this.demoRoutesState.set(NOT_LOADED);
+    this.groupsState.set(NOT_LOADED);
+    this.globalRulesState.set(NOT_LOADED);
     this.loaded.set(false);
     this.loadError.set(null);
     this.actionError.set(null);
@@ -118,7 +131,14 @@ export class AdminStore {
   async load(): Promise<void> {
     if (this.loaded()) return;
     this.loadError.set(null);
-    await Promise.all([this.loadCapabilities(), this.loadPolicies(), this.loadExemptions(), this.loadDemoTargets()]);
+    await Promise.all([
+      this.loadCapabilities(),
+      this.loadPolicies(),
+      this.loadExemptions(),
+      this.loadDemoTargets(),
+      this.loadGroups(),
+      this.loadGlobalRules(),
+    ]);
     this.loaded.set(true);
   }
 
@@ -181,6 +201,89 @@ export class AdminStore {
     this.exemptionsState.set({ loaded: true, error: null });
   }
 
+  async loadGroups(): Promise<void> {
+    this.groupsState.set(NOT_LOADED);
+    const result = await firstValueFrom(this.api.listGroups());
+    if (isAdminError(result)) {
+      this.groupsState.set({ loaded: true, error: this.describeLoadFailure(result) });
+      return;
+    }
+    this.groups.set(result);
+    this.groupsState.set({ loaded: true, error: null });
+  }
+
+  async loadGlobalRules(): Promise<void> {
+    this.globalRulesState.set(NOT_LOADED);
+    const result = await firstValueFrom(this.api.globalRules());
+    if (isAdminError(result)) {
+      this.globalRulesState.set({ loaded: true, error: this.describeLoadFailure(result) });
+      return;
+    }
+    this.globalRules.set(result);
+    this.globalRulesState.set({ loaded: true, error: null });
+  }
+
+  async saveGroup(edit: PolicyGroupEdit, editingId: string | null): Promise<PolicyGroup | AdminApiError> {
+    this.clearMessages();
+    const result = editingId === null
+      ? await firstValueFrom(this.api.createGroup(edit))
+      : await firstValueFrom(this.api.updateGroup(editingId, edit));
+    if (isAdminError(result)) {
+      this.actionError.set(this.describeSaveFailure(result));
+      return result;
+    }
+    await this.loadGroups();
+    this.actionInfo.set(`Saved group ${result.id} at version ${result.version}.`);
+    return result;
+  }
+
+  async saveGlobalRules(edit: GlobalScopeRulesEdit): Promise<GlobalScopeRules | AdminApiError> {
+    this.clearMessages();
+    const result = await firstValueFrom(this.api.updateGlobalRules(edit));
+    if (isAdminError(result)) {
+      this.actionError.set(this.describeSaveFailure(result));
+      return result;
+    }
+    this.globalRules.set(result);
+    this.globalRulesState.set({ loaded: true, error: null });
+    this.actionInfo.set(`Saved global rules at version ${result.version}.`);
+    return result;
+  }
+
+  async deleteGroup(id: string): Promise<void> {
+    this.clearMessages();
+    const result = await firstValueFrom(this.api.deleteGroup(id));
+    if (isAdminError(result)) {
+      this.actionError.set(this.describeSaveFailure(result));
+      return;
+    }
+    await this.loadGroups();
+    this.actionInfo.set(`Deleted group ${id}.`);
+  }
+
+  async deleteEndpoint(groupId: string, endpointId: string): Promise<PolicyGroup | AdminApiError> {
+    this.clearMessages();
+    const result = await firstValueFrom(this.api.deleteEndpoint(groupId, endpointId));
+    if (isAdminError(result)) {
+      this.actionError.set(this.describeSaveFailure(result));
+      return result;
+    }
+    await this.loadGroups();
+    this.actionInfo.set(`Deleted endpoint ${endpointId} from group ${groupId}.`);
+    return result;
+  }
+
+  async repairGroup(id: string): Promise<void> {
+    this.clearMessages();
+    const result = await firstValueFrom(this.api.repairGroup(id));
+    if (isAdminError(result)) {
+      this.actionError.set(this.describeSaveFailure(result));
+      return;
+    }
+    await this.loadGroups();
+    this.actionInfo.set(`Repaired group ${id}: ${result.written} written, ${result.deleted} deleted.`);
+  }
+
   /** Fetches a bounded audit window. Larger limits replace the window rather than appending. */
   async loadAudit(limit: (typeof AUDIT_LIMITS)[number]): Promise<void> {
     this.loadError.set(null);
@@ -239,8 +342,8 @@ export class AdminStore {
       this.actionError.set(this.describeSaveFailure(result));
       return result;
     }
-    await this.refreshExemptions();
     this.actionInfo.set(`Exemption ${edit.id} created.`);
+    void this.refreshExemptions();
     return result as unknown as AdminPolicy;
   }
 
@@ -268,6 +371,8 @@ export class AdminStore {
   }
 
   private describeLoadFailure(error: AdminApiError): string {
+    const throttle = describeThrottle(error);
+    if (throttle) return throttle;
     if (error.status === 0) return 'Backend unreachable. Is the API running on the configured port?';
     if (error.status === 401) return 'Session expired. Sign in again.';
     if (error.status === 403) return 'That account is not an administrator.';
@@ -276,11 +381,13 @@ export class AdminStore {
 
   private describeSaveFailure(error: AdminApiError): string {
     if (error.status === 409 || error.code === 'version_conflict') {
-      return 'Someone else changed this policy first. Close the editor, reload, and re-apply your change.';
+      return 'Someone else changed this resource first. Reload, then re-apply your change.';
     }
-    if (error.status === 404) return 'That policy no longer exists. Reload the list.';
+    const throttle = describeThrottle(error);
+    if (throttle) return throttle;
+    if (error.status === 404) return 'That resource no longer exists. Reload the list.';
     if (error.status === 0) return 'Backend unreachable. Nothing was saved.';
-    if (error.problems.length > 0) return error.problems.join(' ');
+    if (error.problems.length > 0) return `${error.message}: ${error.problems.join(' ')}`;
     return error.message;
   }
 }

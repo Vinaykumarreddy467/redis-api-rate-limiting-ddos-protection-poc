@@ -29,11 +29,14 @@ public class PolicyMatcher {
 
     private final ManagedPolicyStore store;
     private final RateLimitProperties yamlProperties;
+    private final ProjectionService projections;
     private final AntPathMatcher matcher = new AntPathMatcher();
 
-    public PolicyMatcher(ManagedPolicyStore store, RateLimitProperties yamlProperties) {
+    public PolicyMatcher(ManagedPolicyStore store, RateLimitProperties yamlProperties,
+            ProjectionService projections) {
         this.store = store;
         this.yamlProperties = yamlProperties;
+        this.projections = projections;
     }
 
     /**
@@ -58,9 +61,10 @@ public class PolicyMatcher {
                 routeScoped.add(policy);
             }
         }
-        routeScoped.sort((a, b) -> Integer.compare(
-                b.path() == null ? 0 : b.path().length(),
-                a.path() == null ? 0 : a.path().length()));
+        routeScoped.sort((a, b) -> {
+            int specificity = matcher.getPatternComparator(path).compare(a.path(), b.path());
+            return specificity != 0 ? specificity : a.id().compareTo(b.id());
+        });
         var all = new ArrayList<PolicyDocument>(routeScoped);
         all.addAll(global);
         return all;
@@ -69,12 +73,41 @@ public class PolicyMatcher {
     /** Managed policies when readable, otherwise the YAML baseline projected into the same shape. */
     private List<PolicyDocument> effectivePolicies() {
         try {
-            List<PolicyDocument> managed = store.findAll();
-            if (!managed.isEmpty()) {
-                return managed;
+            var groups = store.findAllGroups();
+            var globalRules = store.findGlobalRules().orElse(null);
+
+            // Group documents are the source of truth, so their rules are enforced straight from the
+            // group record rather than from the compatibility projection. The projection carries the
+            // same deterministic id, which is why an already-running counter keeps counting after the
+            // switch; it is dropped from the standalone list so the request is charged once, not twice.
+            var groupOwned = new java.util.HashSet<String>();
+            for (PolicyGroup group : groups) {
+                groupOwned.addAll(projections.projectionIdsForGroup(group));
             }
-            // Empty managed store with no seed yet: use YAML so a cold Redis still limits traffic.
-            return fromYaml();
+            if (globalRules != null) {
+                groupOwned.addAll(projections.projectionIdsForGlobalRules(globalRules));
+            }
+
+            var effective = new ArrayList<PolicyDocument>();
+            for (PolicyDocument document : store.findAll()) {
+                if (!groupOwned.contains(document.id())) {
+                    effective.add(document);
+                }
+            }
+            for (PolicyGroup group : groups) {
+                effective.addAll(projections.projectGroup(group));
+            }
+            if (globalRules != null) {
+                effective.addAll(projections.projectGlobalRules(globalRules));
+            }
+            if (effective.isEmpty()) {
+                // Empty managed store with no seed yet: use YAML so a cold Redis still limits traffic.
+                return fromYaml();
+            }
+            // Group documents arrive in set-membership order, which varies between instances. Sorting
+            // by id keeps the admin list and the governing policy stable for equal-length routes.
+            effective.sort(java.util.Comparator.comparing(PolicyDocument::id));
+            return effective;
         } catch (RuntimeException e) {
             log.warn("managed policy lookup failed ({}); enforcing the application.yml baseline instead",
                     e.getClass().getSimpleName());

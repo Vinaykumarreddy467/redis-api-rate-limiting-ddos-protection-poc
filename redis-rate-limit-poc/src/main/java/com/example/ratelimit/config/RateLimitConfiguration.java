@@ -32,8 +32,11 @@ public class RateLimitConfiguration {
     @Bean
     RateLimitFilter rateLimitFilter(PolicyEnforcer enforcer, RateLimitIdentityResolver identities,
             RateLimitMetrics metrics, RateLimitProperties properties, ObjectMapper mapper, Clock clock,
-            com.example.ratelimit.policy.ExemptionStore exemptions) {
-        return new RateLimitFilter(enforcer, identities, metrics, properties, mapper, clock, exemptions);
+            com.example.ratelimit.policy.ExemptionStore exemptions,
+            com.example.ratelimit.policy.EndpointExemptionService endpointExemptions,
+            com.example.ratelimit.traffic.TrafficRecorder traffic) {
+        return new RateLimitFilter(enforcer, identities, metrics, properties, mapper, clock, exemptions,
+                endpointExemptions, traffic);
     }
 
     /**
@@ -58,6 +61,27 @@ public class RateLimitConfiguration {
     FilterRegistrationBean<AccessLogFilter> accessLogFilterRegistration(RateLimitIdentityResolver identities) {
         var registration = new FilterRegistrationBean<>(new AccessLogFilter(identities));
         registration.setOrder(Ordered.LOWEST_PRECEDENCE - 150);
+        registration.addUrlPatterns("/*");
+        return registration;
+    }
+
+    @Bean
+    com.example.ratelimit.ratelimit.AdminProtectionFilter adminProtectionFilter(RateLimitStore store,
+            RateLimitIdentityResolver identities, RateLimitProperties properties, ObjectMapper mapper,
+            Clock clock) {
+        return new com.example.ratelimit.ratelimit.AdminProtectionFilter(store, identities, properties,
+                mapper, clock);
+    }
+
+    /**
+     * Order -150 is numerically below Spring Security's -100, so this runs BEFORE authentication and
+     * can count failed credential guesses on every path. (The rate limit and access log filters sit far above -100.)
+     */
+    @Bean
+    FilterRegistrationBean<com.example.ratelimit.ratelimit.AdminProtectionFilter> adminProtectionRegistration(
+            com.example.ratelimit.ratelimit.AdminProtectionFilter filter) {
+        var registration = new FilterRegistrationBean<>(filter);
+        registration.setOrder(-150);
         registration.addUrlPatterns("/*");
         return registration;
     }

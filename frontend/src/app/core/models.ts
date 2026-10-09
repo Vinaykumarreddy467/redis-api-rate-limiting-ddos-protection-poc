@@ -48,11 +48,16 @@ export interface RejectionHeaders {
   policy: string | null;
 }
 
-export interface RejectionInfo {
+export interface ResponseEntry {
   index: number;
   status: number;
   headers: RejectionHeaders;
+  /** Full response body for pretty-printing, null if not JSON or empty. */
+  body: unknown | null;
+  /** Extracted message field for quick display. */
   message: string | null;
+  /** Set when the request never produced a response, e.g. offline or cancelled. */
+  transportError: string | null;
 }
 
 export type DemoOutcome = 'success' | 'rejected' | 'error';
@@ -74,6 +79,10 @@ export interface DemoSummary {
   completed: boolean;
   cancelled: boolean;
   inconclusive: boolean;
-  lastRejection: RejectionInfo | null;
-  lastError: { index: number; status: number; reason: string } | null;
+  /** All responses in order, for per-request display. */
+  responses: ResponseEntry[];
+  /** Convenience: last rejection (429) for the inspector panel. */
+  lastRejection: ResponseEntry | null;
+  /** Convenience: last error (non-429 failure) for the inspector panel. */
+  lastError: ResponseEntry | null;
 }

@@ -1,11 +1,13 @@
 <section class="demo" aria-labelledby="demo-heading">
   <h2 id="demo-heading">Run request demo</h2>
   <p class="note">
-    Each entry is one policy you configured. Requests go to this local POC only, one at a time. Past
+    Choose a group endpoint or use the legacy policy catalog. Requests go to this local POC only, one at a time. Past
     the configured limit the API answers <strong>429</strong> on purpose &mdash; that is the behaviour
     being demonstrated.
   </p>
 
+  <div class="demo-layout has-responses">
+  <div class="demo-main">
   @if (loadError(); as error) {
     <p class="alert alert-bad" role="alert">Policy targets could not be loaded: {{ error }}</p>
     <button type="button" class="primary" (click)="refresh()" [disabled]="running()">Retry targets</button>
@@ -20,16 +22,41 @@
         apply are resolved by the limiter itself.
       </p>
     }
-    <button type="button" class="secondary" (click)="refresh()" [disabled]="running() || loading()">
+    <button type="button" class="btn-secondary" (click)="refresh()" [disabled]="running() || loading()">
       Refresh targets
     </button>
   </div>
 
   @if (!loading() && targets().length === 0 && !loadError()) {
-    <p class="empty">You have no policies configured, so there is nothing to test.</p>
+    <p class="empty">No legacy policy targets are configured.</p>
   }
 
-  @if (target(); as selected) {
+  <div class="controls">
+    <div class="field">
+      <label for="demo-mode">Target source</label>
+      <select id="demo-mode" name="mode" [value]="mode()" (change)="onModeChange($event)" [disabled]="running()">
+        <option value="groups">Policy groups</option><option value="legacy">Legacy demo catalog</option>
+      </select>
+    </div>
+    @if (mode() === 'groups') {
+      <div class="field">
+        <label for="demo-group">Policy group</label>
+        <select id="demo-group" name="group" [value]="selectedGroup()?.id ?? ''" (change)="onGroupChange($event)" [disabled]="running() || groupsLoading()">
+          @for (group of groups(); track group.id) { <option [value]="group.id">{{ group.name }} ({{ group.enabled ? 'enabled' : 'disabled' }})</option> }
+        </select>
+      </div>
+      <div class="field">
+        <label for="demo-endpoint">Endpoint</label>
+        <select id="demo-endpoint" name="endpoint" [value]="selectedGroupEndpoint()?.id ?? ''" (change)="onEndpointChange($event)" [disabled]="running() || selectedGroupEndpoints().length === 0">
+          @for (endpoint of selectedGroupEndpoints(); track endpoint.id) { <option [value]="endpoint.id">{{ endpoint.displayName }} — {{ endpoint.method }} {{ endpoint.path }}</option> }
+        </select>
+        @if (selectedGroupEndpoint(); as endpoint) { <p class="hint">{{ endpoint.method }} {{ endpoint.path }} · {{ endpoint.exempt ? 'exempt from all rate limits' : 'subject to configured rules' }}</p> }
+        @if (!groupsLoading() && groups().length === 0) { <p class="hint">No policy groups available. Select the legacy demo catalog.</p> }
+      </div>
+    }
+  </div>
+
+  @if (mode() === 'legacy' && target(); as selected) {
     <div class="route-detail">
       <p class="route-note" role="note">{{ selected.note }}</p>
       @if (selected.enabled && selected.testable) {
@@ -78,6 +105,34 @@
     </div>
   }
 
+  @if (mode() === 'groups' && selectedGroupEndpoint(); as endpoint) {
+    <div class="route-detail">
+      <p class="route-note" role="note">{{ endpoint.note }}</p>
+      @if (!endpoint.exempt) {
+        @if (groupEndpointPolicies().length === 0) {
+          <p class="empty">
+            No enabled policy is configured for exactly <code>{{ endpoint.method }} {{ endpoint.path }}</code>.
+            Global or group-wide rules may still apply.
+          </p>
+        } @else {
+          <p class="help">
+            {{ groupEndpointPolicies().length }} polic{{ groupEndpointPolicies().length === 1 ? 'y is' : 'ies are' }}
+            configured for <code>{{ endpoint.method }} {{ endpoint.path }}</code> and each one must allow a request.
+          </p>
+          <ul class="policy-list">
+            @for (policy of groupEndpointPolicies(); track policy.id) {
+              <li>
+                <strong>{{ policy.name }}</strong>
+                <span class="policy-meta">{{ policy.algorithm }} &middot; {{ policy.scope }}</span>
+                <span class="policy-params">{{ policy.parameterSummary }}</span>
+              </li>
+            }
+          </ul>
+        }
+      }
+    </div>
+  }
+
   @if (untestable().length > 0) {
     <details class="unprobeable">
       <summary>{{ untestable().length }} polic{{ untestable().length === 1 ? 'y cannot' : 'ies cannot' }} be tested automatically</summary>
@@ -93,8 +148,8 @@
     </details>
   }
 
-  <form class="controls" (submit)="$event.preventDefault(); onStart()" [class.hidden]="targets().length === 0">
-    <div class="field">
+  <form class="controls" (submit)="$event.preventDefault(); onStart()" [class.hidden]="mode() === 'legacy' && targets().length === 0">
+    @if (mode() === 'legacy') { <div class="field">
       <label for="demo-target">Policy to test</label>
       <select
         id="demo-target"
@@ -115,7 +170,7 @@
       @if (target(); as selected) {
         <p class="hint">Sends {{ selected.method }} {{ selected.concretePath }}.</p>
       }
-    </div>
+    </div> }
 
     <div class="field">
       <label for="demo-count">Requests to send</label>
@@ -160,12 +215,16 @@
     }
 
     <div class="actions">
-      <button type="submit" class="primary" [disabled]="running() || !target()?.testable">
+      <button type="submit" class="primary" [disabled]="running() || !route() || (mode() === 'legacy' && !target()?.testable)">
         {{ running() ? 'Running…' : 'Start demo' }}
       </button>
-      <button type="button" (click)="onCancel()" [disabled]="!running()">Cancel</button>
+      <button type="button" class="btn-secondary" (click)="onCancel()" [disabled]="!running()">Cancel</button>
     </div>
   </form>
+
+  @if (groupRunBlockReason(); as reason) {
+    <p class="alert alert-warn" role="status">{{ reason }}</p>
+  }
 
   @if (formError(); as message) {
     <p class="form-error" role="alert">{{ message }}</p>
@@ -189,7 +248,7 @@
     </div>
   }
 
-  @if (summary(); as result) {
+@if (summary(); as result) {
     <div class="result" [class.inconclusive]="result.inconclusive">
       <h3>Observed result</h3>
       <ul>
@@ -231,7 +290,7 @@
       </p>
       @if (result.lastError; as failure) {
         <p class="result-error">
-          Stopped at request #{{ failure.index }}: {{ failure.reason }}.
+          Stopped at request #{{ failure.index }}: {{ failure.message ?? failure.transportError ?? 'HTTP ' + failure.status }}.
         </p>
       }
     </div>
@@ -253,4 +312,74 @@
       </details>
     </div>
   }
+
+  </div>
+
+    <aside class="responses-panel" aria-labelledby="responses-heading">
+      <div class="responses-head">
+        <h3 id="responses-heading">
+          All responses <span class="count-chip">{{ responses().length }}</span>
+          @if (running()) { <span class="chip chip-on" role="status">receiving&#8230;</span> }
+        </h3>
+        <div class="responses-tools">
+          <label class="visually-hidden" for="response-filter">Show responses</label>
+          <select id="response-filter" name="response-filter" [ngModel]="responseFilter()"
+            (ngModelChange)="responseFilter.set($event)">
+            <option value="all">All</option>
+            <option value="ok">Successful</option>
+            <option value="rejected">Rejected (429)</option>
+            <option value="other">Errors</option>
+          </select>
+          <button type="button" class="btn-secondary" (click)="expandAll()">Expand all</button>
+          <button type="button" class="btn-secondary" (click)="collapseAll()">Collapse all</button>
+        </div>
+      </div>
+      <p class="responses-summary">
+        {{ responseCounts().ok }} successful &middot; {{ responseCounts().rejected }} rejected &middot;
+        {{ responseCounts().other }} errors
+      </p>
+      <div class="responses-scroll" tabindex="0" role="region" aria-label="Responses, scrollable list">
+        @for (response of visibleResponses(); track response.index) {
+          <details class="response-entry" [open]="isResponseExpanded(response.index)" (toggle)="setResponseExpanded(response.index, $any($event.target).open)">
+            <summary>
+              Request #{{ response.index }} — HTTP {{ response.status }}
+              @if (response.status === 429) { <span class="badge rejected">REJECTED</span> }
+              @else if (response.status >= 200 && response.status < 300) { <span class="badge success">OK</span> }
+              @else if (response.status === 404) { <span class="badge notfound">NOT FOUND</span> }
+              @else if (response.transportError) { <span class="badge error">ERROR</span> }
+            </summary>
+            <div class="response-detail">
+              <p><strong>Request:</strong> {{ lastRunLabel() }} (request #{{ response.index }})</p>
+              <p><strong>Status:</strong> HTTP {{ response.status }}</p>
+              @if (response.headers.retryAfter || response.headers.limit || response.headers.remaining || response.headers.policy) {
+                <dl class="rate-limit-headers">
+                  @if (response.headers.retryAfter) { <div><dt>Retry-After</dt><dd>{{ response.headers.retryAfter }} s</dd></div> }
+                  @if (response.headers.limit) { <div><dt>X-RateLimit-Limit</dt><dd>{{ response.headers.limit }}</dd></div> }
+                  @if (response.headers.remaining) { <div><dt>X-RateLimit-Remaining</dt><dd>{{ response.headers.remaining }}</dd></div> }
+                  @if (response.headers.policy) { <div><dt>X-RateLimit-Policy</dt><dd>{{ response.headers.policy }}</dd></div> }
+                </dl>
+              }
+              @if (response.message) {
+                <p><strong>Message:</strong> {{ response.message }}</p>
+              }
+              @if (response.transportError) {
+                <p class="transport-error"><strong>Transport error:</strong> {{ response.transportError }}</p>
+              }
+              @if (response.body !== null) {
+                <pre>{{ json(response.body) }}</pre>
+              } @else {
+                <p class="no-body">(no response body)</p>
+              }
+            </div>
+          </details>
+        } @empty {
+          @if (responses().length === 0) {
+            <p class="empty">No requests sent yet. Press Start demo and each response appears here the moment it returns.</p>
+          } @else {
+            <p class="empty">No responses match this filter.</p>
+          }
+        }
+      </div>
+    </aside>
+  </div>
 </section>

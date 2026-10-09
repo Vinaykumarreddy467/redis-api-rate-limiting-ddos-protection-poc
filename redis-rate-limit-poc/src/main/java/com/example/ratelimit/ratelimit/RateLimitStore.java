@@ -31,6 +31,27 @@ public interface RateLimitStore {
     RateLimitDecision peek(Policy policy, String identityType, String identity, long nowMillis);
 
     /**
+     * Control-plane lockout: time left on the lock for {@code ip}, or {@link java.time.Duration#ZERO}
+     * when it is not locked out. Stores that do not support it must not be used with the admin filter.
+     *
+     * @throws RateLimitStoreUnavailableException when the backing store cannot be reached
+     */
+    default java.time.Duration controlPlaneLockRemaining(String ip) {
+        throw new UnsupportedOperationException("control-plane lockout not supported");
+    }
+
+    /**
+     * Records one failed sign-in for {@code ip}. Atomically counts it within {@code countWindow}; when the
+     * count reaches {@code maxFailures} the IP is locked for the full {@code lockout} and the count resets.
+     *
+     * @throws RateLimitStoreUnavailableException when the backing store cannot be reached
+     */
+    default void controlPlaneRecordFailure(String ip, int maxFailures, java.time.Duration countWindow,
+            java.time.Duration lockout) {
+        throw new UnsupportedOperationException("control-plane lockout not supported");
+    }
+
+    /**
      * One policy charge inside an atomic batch. Carries the managed document rather than the legacy
      * fixed-window record so a heterogeneous batch can dispatch per algorithm.
      */

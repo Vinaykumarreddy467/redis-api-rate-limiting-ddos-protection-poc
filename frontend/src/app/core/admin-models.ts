@@ -23,6 +23,8 @@ export interface AdminPolicy {
   updatedAt: string;
   updatedBy: string | null;
   parameterSummary: string;
+  /** Where the policy is owned: a standalone document, a policy group rule, or a global scope rule. */
+  source?: 'POLICY' | 'GROUP' | 'GLOBAL';
 }
 
 /** Body for create and update. Version carries the value the editor read. */
@@ -128,6 +130,136 @@ export interface AdminApiError {
   code: string;
   message: string;
   problems: string[];
+  /** Seconds to wait before retrying; set for 429 and 503 throttling responses. */
+  retryAfterSeconds?: number;
+}
+
+/** Operator text for a throttled (429) or store-down (503) response, or null for other errors. */
+export function describeThrottle(error: AdminApiError, seconds = error.retryAfterSeconds): string | null {
+  if (error.status === 429) return `Too many attempts, retry in ${seconds ?? 0} s`;
+  if (error.status === 503 && seconds !== undefined) return `Service unavailable, retry in ${seconds} s`;
+  return null;
+}
+
+export type FailureMode = 'FAIL_OPEN' | 'FAIL_CLOSED';
+export type PolicyScope = 'ENDPOINT' | 'IP' | 'USER' | 'GLOBAL' | 'APPLICATION';
+export type PolicyAlgorithm =
+  | 'FIXED_WINDOW'
+  | 'SLIDING_WINDOW'
+  | 'SLIDING_WINDOW_COUNTER'
+  | 'TOKEN_BUCKET'
+  | 'LEAKY_BUCKET'
+  | 'CONCURRENCY_LIMIT';
+
+/** Matches PolicyGroup and the controller's GroupResponse JSON (projectionIds are not exposed). */
+export interface PolicyGroup {
+  id: string;
+  name: string;
+  enabled: boolean;
+  endpoints: EndpointRule[];
+  onRedisError: FailureMode | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
+/** Matches EndpointRule and EndpointRuleDto. */
+/** One rate-limit decision from the live traffic feed. Client is a masked IP; user is a hashed name. */
+export interface TrafficEvent {
+  id: number;
+  at: string;
+  method: string;
+  path: string;
+  outcome: 'ALLOWED' | 'REJECTED' | 'STORE_ERROR';
+  status: number;
+  policy: string;
+  limit: number | null;
+  remaining: number | null;
+  retryAfterSeconds: number | null;
+  client: string;
+  user: string | null;
+  /** Set for requests sent by the console's demo runner, so a decision matches its response. */
+  run?: string | null;
+  seq?: number | null;
+}
+
+/** Per-second outcome counts behind the live chart. */
+export interface TrafficBucket {
+  t: number;
+  allowed: number;
+  rejected: number;
+  error: number;
+}
+
+export interface TrafficResponse {
+  enabled: boolean;
+  capacity: number;
+  dropped: number;
+  serverTime: string;
+  events: TrafficEvent[];
+  buckets: TrafficBucket[];
+}
+
+export interface EndpointRule {
+  id: string;
+  method: string;
+  path: string;
+  displayName: string;
+  repeatable: boolean;
+  exempt: boolean;
+  scopeRules: ScopeRule[];
+}
+
+/** Durations are ISO-8601 strings in controller DTOs; null represents omitted algorithm parameters. */
+export interface ScopeRule {
+  scope: PolicyScope;
+  algorithm: PolicyAlgorithm;
+  window: string | null;
+  limit: number | null;
+  capacity: number | null;
+  refillInterval: string | null;
+  cost: number | null;
+  drainRate: number | null;
+  queueCapacity: number | null;
+  maxConcurrent: number | null;
+  leaseDuration: string | null;
+  onRedisError: FailureMode | null;
+}
+
+/** Matches GlobalRulesResponse; update requests use the same writable fields plus version. */
+export interface GlobalScopeRules {
+  rules: ScopeRule[];
+  onRedisError: FailureMode | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
+/** Controller GroupRequest. Server-owned response metadata is intentionally excluded. */
+export interface PolicyGroupEdit {
+  id?: string;
+  name?: string;
+  enabled?: boolean;
+  /** An endpoint without an id is new: the server generates the id and never lets it change. */
+  endpoints: Array<Omit<EndpointRule, 'id'> & { id?: string }>;
+  onRedisError?: FailureMode | null;
+  version?: number;
+}
+
+/** Controller GlobalRulesRequest. */
+export interface GlobalScopeRulesEdit {
+  rules: ScopeRule[];
+  onRedisError?: FailureMode | null;
+  version: number;
+}
+
+export interface ProjectionRepairResult {
+  groupId: string;
+  written: number;
+  deleted: number;
+  at: string;
 }
 
 /** ISO-8601 duration (PT60S, PT1M, PT1H) to seconds. Null when absent or unparseable. */

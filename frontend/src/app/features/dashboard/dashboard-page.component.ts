@@ -67,6 +67,12 @@ export class DashboardPageComponent {
     return formatWindow(seconds);
   }
 
+  /** FIXED_WINDOW becomes "Fixed window": the raw enum name is long, unbreakable and shouty in a table. */
+  algorithmLabel(algorithm: string): string {
+    const words = algorithm.toLowerCase().split('_').join(' ');
+    return words.charAt(0).toUpperCase() + words.slice(1);
+  }
+
   identityLabel(scope: string): string {
     switch (scope) {
       case 'USER':

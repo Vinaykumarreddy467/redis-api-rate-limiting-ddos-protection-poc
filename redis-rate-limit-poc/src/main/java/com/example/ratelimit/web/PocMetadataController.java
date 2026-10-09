@@ -1,15 +1,18 @@
 package com.example.ratelimit.web;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import com.example.ratelimit.config.RateLimitProperties;
 import com.example.ratelimit.config.RateLimitProperties.FailureMode;
+import com.example.ratelimit.config.RateLimitProperties.Identity;
 import com.example.ratelimit.config.RateLimitProperties.Policy;
 import com.example.ratelimit.policy.ManagedPolicyStore;
 import com.example.ratelimit.policy.PolicyDocument;
+import com.example.ratelimit.policy.PolicyGroup;
 import com.example.ratelimit.policy.Scope;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,9 +48,13 @@ public class PocMetadataController {
     public Map<String, Object> policies() {
         List<PolicyDocument> managed = List.of();
         boolean live = false;
+        Map<String, PolicyGroup> groupMap = new HashMap<>();
         try {
             managed = store.findAll();
             live = !managed.isEmpty();
+            for (var group : store.findAllGroups()) {
+                groupMap.put(group.id(), group);
+            }
         } catch (RuntimeException e) {
             log.warn("managed policy lookup failed for the console ({}); showing the configuration baseline",
                     e.getClass().getSimpleName());
@@ -56,7 +63,7 @@ public class PocMetadataController {
         String source;
         if (live) {
             for (PolicyDocument policy : managed) {
-                policies.add(row(policy));
+                policies.add(row(policy, groupMap));
             }
             source = "managed policy store (Redis)";
         } else {
@@ -77,7 +84,7 @@ public class PocMetadataController {
     /** One managed policy, in the shape the console table binds to. Nulls stay null: a token bucket
      * has no window, a concurrency policy has no request limit, and the table renders that honestly
      * instead of inventing a number. */
-    private Map<String, Object> row(PolicyDocument policy) {
+    private Map<String, Object> row(PolicyDocument policy, Map<String, PolicyGroup> groupMap) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("id", policy.id());
         row.put("method", policy.method());
@@ -99,6 +106,29 @@ public class PocMetadataController {
             case FAIL_OPEN -> "Fail open";
             case FAIL_CLOSED -> "Fail closed";
         });
+        // Additive group metadata for Phase 1 policy groups
+        String groupId = null;
+        String endpointId = null;
+        String groupName = null;
+        for (var group : groupMap.values()) {
+            if (group.projectionIds().contains(policy.id())) {
+                groupId = group.id();
+                groupName = group.name();
+                for (var endpoint : group.endpoints()) {
+                    for (var rule : endpoint.scopeRules()) {
+                        if (policy.id().equals(new com.example.ratelimit.policy.ProjectionService()
+                                .projectionId(group.id(), endpoint.id(), rule.scope()))) {
+                            endpointId = endpoint.id();
+                            break;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+        row.put("groupId", groupId);
+        row.put("endpointId", endpointId);
+        row.put("groupName", groupName);
         return row;
     }
 

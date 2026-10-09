@@ -66,7 +66,13 @@ public final class AdminDtos {
             Instant createdAt,
             Instant updatedAt,
             String updatedBy,
-            String parameterSummary) {
+            String parameterSummary,
+            String source) {
+
+        /** A standalone policy document, as opposed to a rule projected from a group or global scope. */
+        public static final String SOURCE_POLICY = "POLICY";
+        public static final String SOURCE_GROUP = "GROUP";
+        public static final String SOURCE_GLOBAL = "GLOBAL";
 
         public static PolicyResponse from(PolicyDocument p) {
             return new PolicyResponse(p.id(), p.name(), p.method(), p.path(), p.algorithm(),
@@ -74,7 +80,17 @@ public final class AdminDtos {
                     p.window(), p.limit(),
                     p.capacity(), p.refillInterval(), p.cost(), p.drainRate(), p.queueCapacity(),
                     p.maxConcurrent(), p.leaseDuration(), p.enabled(), p.onRedisError(), p.version(),
-                    p.createdAt(), p.updatedAt(), p.updatedBy(), safeSummary(p));
+                    p.createdAt(), p.updatedAt(), p.updatedBy(), safeSummary(p), SOURCE_POLICY);
+        }
+
+        /** Same policy, labelled with where it is owned so the console can separate groups from legacy rows. */
+        public static PolicyResponse from(PolicyDocument p, String source) {
+            var r = from(p);
+            return new PolicyResponse(r.id(), r.name(), r.method(), r.path(), r.algorithm(),
+                    r.algorithmImplemented(), r.scope(), r.window(), r.limit(), r.capacity(),
+                    r.refillInterval(), r.cost(), r.drainRate(), r.queueCapacity(), r.maxConcurrent(),
+                    r.leaseDuration(), r.enabled(), r.onRedisError(), r.version(), r.createdAt(),
+                    r.updatedAt(), r.updatedBy(), r.parameterSummary(), source);
         }
 
         private static String safeSummary(PolicyDocument p) {

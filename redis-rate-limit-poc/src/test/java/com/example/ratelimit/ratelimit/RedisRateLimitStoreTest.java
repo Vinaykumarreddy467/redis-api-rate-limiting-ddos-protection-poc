@@ -353,12 +353,13 @@ class RedisRateLimitStoreTest {
                 .leaky(2, 3)
                 .version(1).timestamps(now, now).build();
         String key = store.stateKey(leaky, "IP", "10.0.4.3", T0);
-        redis.opsForValue().set(key, "1", Duration.ofSeconds(3));
+        // Legacy counter of 2: after migration + first new request = 3 (at capacity), second denied
+        redis.opsForValue().set(key, "2", Duration.ofSeconds(3));
 
         assertThat(store.consumeAll(charge(leaky, "10.0.4.3"), T0).allowed()).isTrue();
-        assertThat(redis.opsForValue().get(key)).startsWith("2000:");
+        assertThat(redis.opsForValue().get(key)).startsWith("3000:");
         assertThat(store.consumeAll(charge(leaky, "10.0.4.3"), T0).allowed())
-                .as("the migrated prior request still consumes its capacity")
+                .as("at capacity, next request denied")
                 .isFalse();
     }
 

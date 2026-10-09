@@ -19,8 +19,11 @@
     @if (error()) {
       <p class="error" role="alert">{{ error() }}</p>
     }
+    @if (throttleMessage()) {
+      <p class="error" role="alert">{{ throttleMessage() }}</p>
+    }
     <div class="actions">
-      <button type="submit" class="btn-primary" [disabled]="busy()">Log in</button>
+      <button type="submit" class="btn-primary" [disabled]="busy() || retryIn() > 0">Log in</button>
       <a routerLink="/overview" class="btn-ghost">Back to overview</a>
     </div>
   </form>

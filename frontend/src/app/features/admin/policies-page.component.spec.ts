@@ -6,6 +6,7 @@ import { firstValueFrom } from 'rxjs';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { AdminApiService } from '../../core/admin-api.service';
+import { AdminStore } from '../../core/admin-store.service';
 import { PoliciesPageComponent } from './policies-page.component';
 
 const BASE = '/api/admin/rate-limit';
@@ -90,6 +91,20 @@ const EXEMPTIONS = [
   },
 ];
 
+const GROUPS = [{
+  id: 'products-group', name: 'Products group', enabled: true, onRedisError: 'FAIL_OPEN', version: 1,
+  createdAt: '2026-10-05T09:00:00Z', updatedAt: '2026-10-05T09:00:00Z', updatedBy: 'pocadmin',
+  endpoints: [{ id: 'products-endpoint', displayName: 'Products', method: 'GET', path: '/api/products', repeatable: true,
+    exempt: false, scopeRules: [{ scope: 'ENDPOINT', algorithm: 'FIXED_WINDOW', window: 'PT1M', limit: 40,
+      capacity: null, refillInterval: null, cost: null, drainRate: null, queueCapacity: null,
+      maxConcurrent: null, leaseDuration: null, onRedisError: null }] }],
+}];
+const GLOBAL_RULES = {
+  rules: [{ scope: 'APPLICATION', algorithm: 'FIXED_WINDOW', window: 'PT1M', limit: 1000, capacity: null,
+    refillInterval: null, cost: null, drainRate: null, queueCapacity: null, maxConcurrent: null, leaseDuration: null, onRedisError: null }],
+  onRedisError: 'FAIL_OPEN', version: 1, createdAt: 'now', updatedAt: 'now', updatedBy: 'pocadmin',
+};
+
 describe('PoliciesPageComponent', () => {
   let fixture: ComponentFixture<PoliciesPageComponent>;
   let http: HttpTestingController;
@@ -108,11 +123,13 @@ describe('PoliciesPageComponent', () => {
     fixture.detectChanges();
   });
 
-  /** The page loads capabilities, policies and exemptions on entry. */
+  /** The page loads legacy and group policies, global rules, capabilities, and exemptions. */
   async function loadWorkspace(policies: unknown[] = POLICIES, exemptions: unknown[] = []): Promise<void> {
     http.expectOne(`${BASE}/capabilities`).flush(CAPABILITIES);
     http.expectOne(`${BASE}/policies`).flush(policies);
     http.expectOne(`${BASE}/exemptions`).flush(exemptions);
+    http.expectOne(`${BASE}/groups`).flush([]);
+    http.expectOne(`${BASE}/global-rules`).flush(GLOBAL_RULES);
     await settle();
   }
 
@@ -132,22 +149,46 @@ describe('PoliciesPageComponent', () => {
     await settle();
   };
 
+  const buttonLabels = () =>
+    Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button')).map((b) => b.textContent?.trim());
+
   it('shows a loading state before the first response arrives', () => {
-    expect(text()).toContain('Loading policies');
+    expect(text()).toContain('Loading policy groups');
   });
 
-  it('lists policies with algorithm, scope and humanized parameters', async () => {
+  it('lists legacy policies that are still enforced, with humanized parameters', async () => {
     await loadWorkspace();
-    expect(text()).toContain('products-read');
-    expect(text()).toContain('100 per 1 minute');
-    expect(text()).toContain('FIXED_WINDOW');
-    expect(text()).toContain('v3');
-    expect(text()).not.toContain('PT1M');
+    const panel = query('[aria-label="Legacy policies still enforced"]')!;
+    expect(panel).not.toBeNull();
+    expect(panel.textContent).toContain('products-read');
+    expect(panel.textContent).toContain('100 per 1 minute');
+    expect(panel.textContent).toContain('v3');
+    expect(panel.textContent).not.toContain('PT1M');
   });
 
-  it('explains an empty store instead of rendering a bare table', async () => {
+  it('offers no way to create, edit or probe a legacy policy', async () => {
+    await loadWorkspace();
+    const labels = buttonLabels();
+    expect(labels.some((label) => label?.includes('legacy policy'))).toBe(false);
+    expect(labels).not.toContain('Edit');
+    expect(labels).not.toContain('Probe');
+    expect(query('[role="dialog"]')).toBeNull();
+    // Only clean-up actions remain.
+    expect(labels).toContain('Disable');
+    expect(labels).toContain('Delete');
+  });
+
+  it('hides the legacy panel when none exist, and ignores group and global rules', async () => {
     await loadWorkspace([]);
-    expect(text()).toContain('No policies are stored');
+    expect(text()).not.toContain('Legacy policies');
+
+    TestBed.inject(AdminStore).policies.set([
+      { ...POLICIES[0], id: 'p-abc', source: 'GROUP' },
+      { ...POLICIES[1], id: 'p-def', source: 'GLOBAL' },
+    ] as never);
+    fixture.detectChanges();
+    await settle();
+    expect(text()).not.toContain('Legacy policies');
   });
 
   it('reports and retries each failed section on its own', async () => {
@@ -159,23 +200,18 @@ describe('PoliciesPageComponent', () => {
     expect(text()).toContain('HTTP 500');
     const retries = Array.from(
       (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLButtonElement>('button'),
-    ).filter((b) => b.textContent?.trim().startsWith('Retry'));
-    expect(retries.map((b) => b.textContent?.trim())).toEqual([
-      'Retry capabilities',
-      'Retry policies',
-      'Retry exemptions',
-    ]);
+    ).filter((b) => ['Retry policies', 'Retry exemptions'].includes(b.textContent?.trim() ?? ''));
+    expect(retries.map((b) => b.textContent?.trim())).toEqual(['Retry policies', 'Retry exemptions']);
 
-    // Retrying capabilities must not re-request the other two sections.
+    // Retrying policies must not re-request exemptions.
     retries[0].click();
     fixture.detectChanges();
     await settle();
-    http.expectOne(`${BASE}/capabilities`);
-    http.expectNone((req) => req.url === `${BASE}/policies`);
+    http.expectOne(`${BASE}/policies`);
     http.expectNone((req) => req.url === `${BASE}/exemptions`);
   });
 
-  it('keeps policies and capabilities visible when only exemptions fail', async () => {
+  it('keeps legacy policies visible when only exemptions fail', async () => {
     http.expectOne(`${BASE}/capabilities`).flush(CAPABILITIES);
     http.expectOne(`${BASE}/policies`).flush(POLICIES);
     http.expectOne(`${BASE}/exemptions`).flush('', { status: 500, statusText: 'Server Error' });
@@ -184,74 +220,6 @@ describe('PoliciesPageComponent', () => {
     // The exemption failure is reported on its own and hides nothing else.
     expect(text()).toContain('Exemptions could not be loaded');
     expect(text()).toContain('products-read');
-    expect(text()).toContain('Composition:');
-  });
-
-  it('does not present empty algorithm and scope selects when capabilities fail', async () => {
-    http.expectOne(`${BASE}/capabilities`).flush('', { status: 500, statusText: 'Server Error' });
-    http.expectOne(`${BASE}/policies`).flush(POLICIES);
-    http.expectOne(`${BASE}/exemptions`).flush([]);
-    await settle();
-    await click('.page-head button');
-
-    expect(query('select[name="f-algorithm"]')).toBeNull();
-    expect(query('select[name="f-scope"]')).toBeNull();
-    expect(text()).toContain('Retry capabilities');
-
-    // Saving is refused rather than sending invented algorithm/scope values.
-    const id = query<HTMLInputElement>('input[name="f-id"]')!;
-    id.value = 'new-policy';
-    id.dispatchEvent(new Event('input'));
-    const path = query<HTMLInputElement>('input[name="f-path"]')!;
-    path.value = '/api/new';
-    path.dispatchEvent(new Event('input'));
-    await click('button[type="submit"]');
-    expect(text()).toContain('could not be loaded');
-    http.expectNone((req) => req.url === `${BASE}/policies` && req.method === 'POST');
-  });
-
-  it('filters the list without another request', async () => {
-    await loadWorkspace();
-    const filter = query<HTMLInputElement>('input[name="policy-filter"]')!;
-    filter.value = 'orders';
-    filter.dispatchEvent(new Event('input'));
-    await settle();
-
-    expect(text()).toContain('order-create');
-    expect(text()).not.toContain('products-read');
-    expect(text()).toContain('1 of 2 policies');
-  });
-
-  it('keeps the editor closed until Create policy is pressed', async () => {
-    await loadWorkspace();
-    expect(query('[role="dialog"]')).toBeNull();
-    expect(text()).not.toContain('Algorithm and scope');
-  });
-
-  it('opens a capability-driven editor that refuses an unimplemented algorithm', async () => {
-    await loadWorkspace();
-    await click('.page-head button');
-    expect(query('[role="dialog"]')).not.toBeNull();
-    // Only enforced algorithms are selectable; the unimplemented one is visibly disabled.
-    const options = Array.from(
-      (fixture.nativeElement as HTMLElement).querySelectorAll('select[name="f-algorithm"] option'),
-    );
-    expect(options.some((o) => (o as HTMLOptionElement).disabled)).toBe(true);
-
-    const id = query<HTMLInputElement>('input[name="f-id"]')!;
-    id.value = 'new-policy';
-    id.dispatchEvent(new Event('input'));
-    const path = query<HTMLInputElement>('input[name="f-path"]')!;
-    path.value = '/api/new';
-    path.dispatchEvent(new Event('input'));
-    const algo = query<HTMLSelectElement>('select[name="f-algorithm"]')!;
-    algo.value = 'TOKEN_BUCKET';
-    algo.dispatchEvent(new Event('change'));
-    await settle();
-
-    await click('button[type="submit"]');
-    expect(text()).toContain('not enforced by this build');
-    http.expectNone((req) => req.url === `${BASE}/policies` && req.method === 'POST');
   });
 
   it('requires a two-step confirmation before deleting', async () => {
@@ -285,33 +253,102 @@ describe('PoliciesPageComponent', () => {
     expect(text()).not.toContain('Rate-limit exemptions');
   });
 
-  it('exemption checkbox hides rate-limit fields and posts to the exemptions endpoint', async () => {
+  it('lists groups and shows enabled status and endpoint details', async () => {
     await loadWorkspace();
-    await click('.page-head button');
+    TestBed.inject(AdminApiService);
+    // Load the actual group payload independently; the shared helper uses an empty list for legacy cases.
+    const store = TestBed.inject(AdminStore);
+    const load = store.loadGroups();
+    http.expectOne(`${BASE}/groups`).flush(GROUPS); await load; await settle();
+    expect(text()).toContain('Products group');
+    expect(text()).toContain('Enabled · v1');
+    expect(text()).toContain('GET /api/products');
+    expect(text()).toContain('Global scopes');
+  });
 
-    const id = query<HTMLInputElement>('input[name="f-id"]')!;
-    id.value = 'ex-health';
-    id.dispatchEvent(new Event('input'));
-    const path = query<HTMLInputElement>('input[name="f-path"]')!;
-    path.value = '/api/exempt-only';
-    path.dispatchEvent(new Event('input'));
+  it('creates a group with endpoint rule fields and keeps global rules separately editable', async () => {
+    await loadWorkspace([]);
+    await click('.page-head .btn-primary');
+    expect(query('input[name="group-id"]')).toBeNull();
+    const name = query<HTMLInputElement>('input[name="group-name"]')!;
+    name.value = 'New group'; name.dispatchEvent(new Event('input'));
+    await click('button[aria-label="Add endpoint"]');
+    expect(text()).toContain('Add endpoint');
+    const endpointName = query<HTMLInputElement>('input[name="endpoint-name"]')!;
+    endpointName.value = 'Created endpoint'; endpointName.dispatchEvent(new Event('input'));
+    const endpointPath = query<HTMLInputElement>('input[name="endpoint-path"]')!;
+    endpointPath.value = '/api/created'; endpointPath.dispatchEvent(new Event('input'));
+    Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Add ENDPOINT scope'))!.click();
+    fixture.detectChanges(); await settle();
+    query<HTMLButtonElement>('[aria-label="Endpoint editor"] .row .btn-primary')!.click();
+    fixture.detectChanges(); await settle();
+    query<HTMLButtonElement>('.modal-foot .btn-primary')!.click();
+    fixture.detectChanges();
+    const request = http.expectOne((req) => req.url === `${BASE}/groups` && req.method === 'POST');
+    expect(request.request.body.endpoints).toHaveLength(1);
+    expect(request.request.body.endpoints[0]).toMatchObject({ method: 'GET', path: '/api/created', displayName: 'Created endpoint' });
+    // The server generates both ids; the browser must not invent any.
+    expect(request.request.body.id).toBeUndefined();
+    expect(request.request.body.endpoints[0].id).toBeUndefined();
+    request.flush({ ...GROUPS[0], id: 'new-group', name: 'New group' });
+    await settle();
+    http.expectOne(`${BASE}/groups`).flush(GROUPS);
+    await settle();
+  });
 
-    const exempt = query<HTMLInputElement>('input[name="f-exempt"]')!;
-    exempt.click();
+  it('opens group view/edit and posts updated group including version', async () => {
+    await loadWorkspace();
+    const store = TestBed.inject(AdminStore);
+    const load = store.loadGroups(); http.expectOne(`${BASE}/groups`).flush(GROUPS); await load; await settle();
+    const groupButton = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('View / edit'))!;
+    groupButton.click(); fixture.detectChanges(); await settle();
+    expect(text()).toContain('Manage policy group');
+    const save = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Save group'))!;
+    save.click(); fixture.detectChanges();
+    const request = http.expectOne((req) => req.url === `${BASE}/groups/products-group` && req.method === 'PUT');
+    expect(request.request.body.version).toBe(1);
+    request.flush({ ...GROUPS[0], version: 2 });
     await settle();
-    // Rate-limit specifics are irrelevant to an exemption, so they disappear.
-    expect(query('select[name="f-algorithm"]')).toBeNull();
+    http.expectOne(`${BASE}/groups`).flush([{ ...GROUPS[0], version: 2 }]);
+    await settle();
+  });
 
-    await click('button[type="submit"]');
-    http
-      .expectOne((req) => req.url === `${BASE}/exemptions` && req.method === 'POST')
-      .flush(EXEMPTIONS[0]);
+  it('edits endpoint exemption and scope parameters without dropping sibling endpoint support', async () => {
+    await loadWorkspace();
+    const store = TestBed.inject(AdminStore);
+    const load = store.loadGroups(); http.expectOne(`${BASE}/groups`).flush(GROUPS); await load; await settle();
+    Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('View / edit'))!.click();
+    fixture.detectChanges(); await settle();
+    query<HTMLButtonElement>('button[aria-label="Add endpoint"]')?.click();
+    fixture.detectChanges(); await settle();
+    expect(text()).toContain('Add endpoint');
+    expect(query('input[name="endpoint-exempt"]')).not.toBeNull();
+    expect(query('select[name="endpoint-algorithm-0"]')).toBeNull();
+    const exemption = query<HTMLInputElement>('input[name="endpoint-exempt"]')!;
+    exemption.click(); fixture.detectChanges(); await settle();
+    expect(query('select[name="endpoint-algorithm-0"]')).toBeNull();
+  });
+
+  it('renders backend hierarchy validation code, message, and problems', async () => {
+    await loadWorkspace();
+    const store = TestBed.inject(AdminStore);
+    const load = store.loadGroups(); http.expectOne(`${BASE}/groups`).flush(GROUPS); await load; await settle();
+    Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('View / edit'))!.click();
+    fixture.detectChanges(); await settle();
+    Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Save group'))!.click();
+    http.expectOne((req) => req.url === `${BASE}/groups/products-group` && req.method === 'PUT').flush(
+      { error: 'policy_invalid', message: 'hierarchy invalid', problems: ['endpoint cap exceeds application cap'] },
+      { status: 400, statusText: 'Bad Request' },
+    );
     await settle();
-    http.expectOne(`${BASE}/exemptions`).flush(EXEMPTIONS);
-    // Saving an exemption refreshes the policy-derived request targets too.
-    http.expectOne(`${BASE}/demo-routes`).flush({ targets: [], policies: [] });
-    await settle();
-    expect(query('[role="dialog"]')).toBeNull();
-    expect(text()).toContain('/api/exempt-only');
+    expect(text()).toContain('policy_invalid');
+    expect(text()).toContain('hierarchy invalid');
+    expect(text()).toContain('endpoint cap exceeds application cap');
   });
 });

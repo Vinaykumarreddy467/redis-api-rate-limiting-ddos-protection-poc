@@ -183,15 +183,16 @@ class DemoRoutesControllerTest {
                 .build(), null, "test");
 
         mvc.perform(get("/api/admin/rate-limit/demo-routes").header(AUTH, basic("pocadmin", "admin123")))
-                .andExpect(jsonPath("$.targets[?(@.policyId == 'app-wide')].testable").value(true))
-                .andExpect(jsonPath("$.targets[?(@.policyId == 'app-wide')].configuredPath",
-                        org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.targets[?(@.policyId == 'app-wide')].testable")
+                        .value(org.hamcrest.Matchers.hasItem(true)))
+                .andExpect(jsonPath("$.targets[?(@.policyId == 'app-wide')].configuredPath")
+                        .value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.nullValue())))
                 .andExpect(jsonPath("$.targets[?(@.policyId == 'app-wide')].concretePath")
-                        .value(org.hamcrest.Matchers.startsWith("/api/")))
-                .andExpect(jsonPath("$.targets[?(@.policyId == 'app-wide')].note",
-                        org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString("applies to every request"))))
+                        .value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.startsWith("/api/"))))
+                .andExpect(jsonPath("$.targets[?(@.policyId == 'app-wide')].note")
+                        .value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString("applies to every request"))))
                 // It is charged on the sampled request too.
-                .andExpect(jsonPath("$.targets[?(@.policyId == 'products-read')].enforcedWith[*]",
+                .andExpect(jsonPath("$.targets[?(@.policyId == 'products-read')].enforcedWith[*].id",
                         org.hamcrest.Matchers.hasItem("app-wide")));
     }
 
