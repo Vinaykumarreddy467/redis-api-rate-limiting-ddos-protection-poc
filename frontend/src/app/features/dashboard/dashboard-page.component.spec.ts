@@ -79,7 +79,10 @@ describe('DashboardPageComponent policy table', () => {
     expect(text()).toContain('125 per 1 minute');
     expect(text()).toContain('Shared across all routes');
     expect(text()).toContain('every route');
-    expect(text()).toContain('Off · v12');
+    const off = (fixture.nativeElement as HTMLElement).querySelectorAll('.state.off');
+    expect(off).toHaveLength(1);
+    expect(off[0].textContent?.trim()).toBe('Off');
+    expect(off[0].parentElement?.textContent).toContain('v12');
     expect(text()).toContain('Read from the managed policy API');
     // The old sample-config wording and its application.yml rows must be gone.
     expect(text()).not.toContain('Sample policy configuration');
