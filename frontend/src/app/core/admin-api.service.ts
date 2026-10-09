@@ -223,8 +223,21 @@ export class AdminApiService {
     if (error.status === 0) {
       return { status: 0, code: 'unreachable', message: 'Backend unreachable.', problems: [] };
     }
-    const body = error.error as { error?: string; message?: string; problems?: string[] } | null;
+    const body = error.error as {
+      error?: string;
+      message?: string;
+      problems?: string[];
+      retryAfterSeconds?: number;
+    } | null;
+    let retryAfterSeconds: number | undefined;
+    if (error.status === 429 || error.status === 503) {
+      const header = Number(error.headers?.get('Retry-After'));
+      const fromBody = Number(body?.retryAfterSeconds);
+      if (error.headers?.get('Retry-After') != null && Number.isFinite(header)) retryAfterSeconds = header;
+      else if (body?.retryAfterSeconds != null && Number.isFinite(fromBody)) retryAfterSeconds = fromBody;
+    }
     return {
+      ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
       status: error.status,
       code: body?.error ?? 'http-error',
       message: body?.message ?? `HTTP ${error.status}`,

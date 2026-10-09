@@ -64,4 +64,25 @@ public class RateLimitConfiguration {
         registration.addUrlPatterns("/*");
         return registration;
     }
+
+    @Bean
+    com.example.ratelimit.ratelimit.AdminProtectionFilter adminProtectionFilter(RateLimitStore store,
+            RateLimitIdentityResolver identities, RateLimitProperties properties, ObjectMapper mapper,
+            Clock clock) {
+        return new com.example.ratelimit.ratelimit.AdminProtectionFilter(store, identities, properties,
+                mapper, clock);
+    }
+
+    /**
+     * Order -150 is numerically below Spring Security's -100, so this runs BEFORE authentication and
+     * can count failed credential guesses on every path. (The rate limit and access log filters sit far above -100.)
+     */
+    @Bean
+    FilterRegistrationBean<com.example.ratelimit.ratelimit.AdminProtectionFilter> adminProtectionRegistration(
+            com.example.ratelimit.ratelimit.AdminProtectionFilter filter) {
+        var registration = new FilterRegistrationBean<>(filter);
+        registration.setOrder(-150);
+        registration.addUrlPatterns("/*");
+        return registration;
+    }
 }

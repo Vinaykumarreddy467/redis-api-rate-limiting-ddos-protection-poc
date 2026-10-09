@@ -350,6 +350,18 @@ Stated plainly, because a POC that hides these is not a POC:
 - **In-memory Actuator counters.** They reset with the process, which is why the console shows
   session-scoped totals labelled "browser-observed since this page opened".
 
+### Limitations: control-plane protection (`rate-limit.admin-protection`)
+
+- **Identity is the client IP only.** It is the socket peer unless `rate-limit.trusted-proxies` lists
+  the proxies you operate. Clients behind a shared NAT or an untrusted proxy therefore share one
+  counter: anyone there can trip the 300/min request cap, or lock the admin out of that address for
+  5 minutes with 10 bad logins, and repeat it indefinitely.
+- **Fails closed.** If Redis is down, any request carrying an `Authorization` header gets 503, on public
+  routes too, because the lockout cannot be checked. Requests without credentials are unaffected.
+- **Production should** key failed logins on IP + username and configure `trusted-proxies`.
+- `X-Forwarded-For` / `X-Real-IP` are not spoofable here: they are ignored unless the socket peer is a
+  trusted proxy, and only the rightmost untrusted hop is used.
+
 ---
 
 ## 9. Documentation map

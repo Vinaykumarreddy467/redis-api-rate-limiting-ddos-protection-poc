@@ -40,6 +40,10 @@ public class RateLimitProperties {
     /** HTTP methods that skip the limiter entirely. */
     private List<String> excludedMethods = List.of("OPTIONS");
 
+    /** Fixed control-plane throttle. Config-only: never stored in or editable through the policy APIs. */
+    @Valid
+    private AdminProtection adminProtection = new AdminProtection();
+
     @Valid
     @NotEmpty
     private List<Policy> policies = List.of();
@@ -74,6 +78,42 @@ public class RateLimitProperties {
         public FailureMode failureMode(FailureMode global) {
             return onRedisError != null ? onRedisError : global;
         }
+    }
+
+    /** Bound from {@code rate-limit.admin-protection.*}. */
+    public static class AdminProtection {
+        private boolean enabled = true;
+        @Min(1)
+        private int limit = 300;
+        @NotNull
+        private Duration window = Duration.ofMinutes(1);
+        @Min(1)
+        private int maxAuthFailures = 10;
+        @NotNull
+        private Duration failureWindow = Duration.ofMinutes(10);
+        @NotNull
+        private Duration lockout = Duration.ofMinutes(5);
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public int getLimit() { return limit; }
+        public void setLimit(int limit) { this.limit = limit; }
+        public Duration getWindow() { return window; }
+        public void setWindow(Duration window) { this.window = window; }
+        public int getMaxAuthFailures() { return maxAuthFailures; }
+        public void setMaxAuthFailures(int maxAuthFailures) { this.maxAuthFailures = maxAuthFailures; }
+        public Duration getFailureWindow() { return failureWindow; }
+        public void setFailureWindow(Duration failureWindow) { this.failureWindow = failureWindow; }
+        public Duration getLockout() { return lockout; }
+        public void setLockout(Duration lockout) { this.lockout = lockout; }
+    }
+
+    public AdminProtection getAdminProtection() {
+        return adminProtection;
+    }
+
+    public void setAdminProtection(AdminProtection adminProtection) {
+        this.adminProtection = adminProtection;
     }
 
     public boolean isEnabled() {

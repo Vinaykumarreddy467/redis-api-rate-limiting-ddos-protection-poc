@@ -6,6 +6,7 @@ import { AdminApiService, isAdminError } from './admin-api.service';
 import { parseDemoTargets } from './demo-catalog';
 import {
   AdminApiError,
+  describeThrottle,
   AdminPolicy,
   AuditRecord,
   Capabilities,
@@ -370,6 +371,8 @@ export class AdminStore {
   }
 
   private describeLoadFailure(error: AdminApiError): string {
+    const throttle = describeThrottle(error);
+    if (throttle) return throttle;
     if (error.status === 0) return 'Backend unreachable. Is the API running on the configured port?';
     if (error.status === 401) return 'Session expired. Sign in again.';
     if (error.status === 403) return 'That account is not an administrator.';
@@ -380,6 +383,8 @@ export class AdminStore {
     if (error.status === 409 || error.code === 'version_conflict') {
       return 'Someone else changed this resource first. Reload, then re-apply your change.';
     }
+    const throttle = describeThrottle(error);
+    if (throttle) return throttle;
     if (error.status === 404) return 'That resource no longer exists. Reload the list.';
     if (error.status === 0) return 'Backend unreachable. Nothing was saved.';
     if (error.problems.length > 0) return `${error.message}: ${error.problems.join(' ')}`;

@@ -49,6 +49,18 @@ rate-limit:
     username: ${RATELIMIT_ADMIN_USER:}
     password: ${RATELIMIT_ADMIN_PASSWORD:}
     raw-password: true
+  # Fixed control-plane throttle for /api/admin/** and /api/poc/**, per client IP, applied BEFORE
+  # Spring Security so failed logins are counted. Config-only: not a managed policy, so it cannot be
+  # viewed, edited or disabled through the admin API/UI. Fails closed (503) if Redis is down.
+  admin-protection:
+    enabled: true
+    limit: 300           # control-plane requests per window per IP (console polls ~1/s as a fallback)
+    window: 1m
+    # Failed Basic logins (bad credentials, on ANY path) per IP. Requests with no credentials never count
+    # and are never blocked by the lockout.
+    max-auth-failures: 10  # failures within `failure-window` before the IP is locked
+    failure-window: 10m
+    lockout: 5m            # full lock duration (429 + Retry-After = time remaining)
   # Used when Redis is unreachable; individual policies may override.
   on-redis-error: fail_open
   ttl-grace: 1s

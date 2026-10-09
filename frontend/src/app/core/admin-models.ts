@@ -130,6 +130,15 @@ export interface AdminApiError {
   code: string;
   message: string;
   problems: string[];
+  /** Seconds to wait before retrying; set for 429 and 503 throttling responses. */
+  retryAfterSeconds?: number;
+}
+
+/** Operator text for a throttled (429) or store-down (503) response, or null for other errors. */
+export function describeThrottle(error: AdminApiError, seconds = error.retryAfterSeconds): string | null {
+  if (error.status === 429) return `Too many attempts, retry in ${seconds ?? 0} s`;
+  if (error.status === 503 && seconds !== undefined) return `Service unavailable, retry in ${seconds} s`;
+  return null;
 }
 
 export type FailureMode = 'FAIL_OPEN' | 'FAIL_CLOSED';
