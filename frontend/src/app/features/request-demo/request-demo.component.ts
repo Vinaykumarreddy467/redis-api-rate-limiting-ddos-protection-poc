@@ -1,4 +1,15 @@
-import { ChangeDetectionStrategy, Component, computed, inject, output, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  ElementRef,
+  Injector,
+  afterNextRender,
+  computed,
+  effect,
+  inject,
+  output,
+  signal,
+} from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
 import {
@@ -26,8 +37,26 @@ import { DemoRunnerService } from './demo-runner.service';
 export class RequestDemoComponent {
   private readonly runner = inject(DemoRunnerService);
   private readonly store = inject(AdminStore);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
 
   readonly maxCount = MAX_REQUEST_COUNT;
+
+  /**
+   * Keeps the newest response in view while a run streams in, unless the user has scrolled up to read an
+   * earlier one; then the list stays where they put it.
+   */
+  private readonly followNewest = effect(() => {
+    const count = this.runner.liveResponses().length;
+    if (count === 0) return;
+    const list = this.host.nativeElement.querySelector<HTMLElement>('.responses-scroll');
+    const nearBottom = !list || list.scrollHeight - list.scrollTop - list.clientHeight < 48;
+    if (!nearBottom) return;
+    afterNextRender(() => {
+      const current = this.host.nativeElement.querySelector<HTMLElement>('.responses-scroll');
+      if (current) current.scrollTop = current.scrollHeight;
+    }, { injector: this.injector });
+  });
 
   /** The user picked a different mode, group, endpoint or policy to test. */
   readonly targetChanged = output<void>();
@@ -49,7 +78,8 @@ export class RequestDemoComponent {
 
   readonly running = this.runner.running;
   readonly summary = computed(() => this.runner.summary());
-  readonly responses = computed(() => this.summary()?.responses ?? []);
+  /** Filled in one by one while a run is in flight, and kept after it ends until the next run starts. */
+  readonly responses = this.runner.liveResponses;
   readonly responseExpanded = signal<Record<number, boolean>>({});
 
   json(value: unknown): string { return JSON.stringify(value, null, 2); }

@@ -6,7 +6,7 @@
     being demonstrated.
   </p>
 
-  <div class="demo-layout" [class.has-responses]="responses().length > 0">
+  <div class="demo-layout has-responses">
   <div class="demo-main">
   @if (loadError(); as error) {
     <p class="alert alert-bad" role="alert">Policy targets could not be loaded: {{ error }}</p>
@@ -315,10 +315,12 @@
 
   </div>
 
-  @if (responses().length > 0) {
     <aside class="responses-panel" aria-labelledby="responses-heading">
       <div class="responses-head">
-        <h3 id="responses-heading">All responses <span class="count-chip">{{ responses().length }}</span></h3>
+        <h3 id="responses-heading">
+          All responses <span class="count-chip">{{ responses().length }}</span>
+          @if (running()) { <span class="chip chip-on" role="status">receiving&#8230;</span> }
+        </h3>
         <div class="responses-tools">
           <label class="visually-hidden" for="response-filter">Show responses</label>
           <select id="response-filter" name="response-filter" [ngModel]="responseFilter()"
@@ -371,10 +373,13 @@
             </div>
           </details>
         } @empty {
-          <p class="empty">No responses match this filter.</p>
+          @if (responses().length === 0) {
+            <p class="empty">No requests sent yet. Press Start demo and each response appears here the moment it returns.</p>
+          } @else {
+            <p class="empty">No responses match this filter.</p>
+          }
         }
       </div>
     </aside>
-  }
   </div>
 </section>

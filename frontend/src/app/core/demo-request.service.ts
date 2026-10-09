@@ -37,10 +37,18 @@ export class DemoRequestService {
   private readonly http = inject(HttpClient);
   private readonly config = inject(API_CONFIG);
 
-  send(route: DemoRoute, credentials: Credentials | null): Observable<DemoRequestResult> {
+  /**
+   * @param tag optional run id and request number. They travel as X-RateGuard-Run / X-RateGuard-Seq so the
+   *            backend's live traffic feed can show which demo request each decision belongs to.
+   */
+  send(route: DemoRoute, credentials: Credentials | null,
+    tag?: { runId: string; seq: number }): Observable<DemoRequestResult> {
     let headers = new HttpHeaders({ Accept: 'application/json' });
     if (credentials) {
       headers = headers.set('Authorization', 'Basic ' + this.encodeBasic(credentials));
+    }
+    if (tag) {
+      headers = headers.set('X-RateGuard-Run', tag.runId).set('X-RateGuard-Seq', String(tag.seq));
     }
     // Verified: /api/login reads a query parameter, so no route sends a body.
     // responseType 'text' keeps the raw body for the 429 path, where HttpClient would otherwise

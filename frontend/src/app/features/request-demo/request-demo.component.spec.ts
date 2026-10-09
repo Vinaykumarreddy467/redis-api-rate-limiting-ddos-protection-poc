@@ -752,6 +752,49 @@ describe('RequestDemoComponent', () => {
     expect(details?.textContent).toContain('HTTP 200');
   });
 
+  it('shows the response panel from page load and fills it one response at a time', async () => {
+    await loadGroups([
+      policyGroup({
+        id: 'group-1',
+        name: 'Products API',
+        endpoints: [endpointRule({ id: 'ep-1', method: 'GET', path: '/api/products', displayName: 'Products Read' })],
+      }),
+    ]);
+    const root = fixture.nativeElement as HTMLElement;
+    const panel = () => root.querySelector('aside.responses-panel')!;
+    // Visible before anything has been sent.
+    expect(panel()).not.toBeNull();
+    expect(panel().textContent).toContain('No requests sent yet');
+
+    await setMode('groups');
+    await setCount(2);
+    const groupSelect = root.querySelector<HTMLSelectElement>('select[name="group"]')!;
+    groupSelect.value = 'group-1';
+    groupSelect.dispatchEvent(new Event('change'));
+    await settle();
+
+    const run = fixture.componentInstance.onStart();
+    await settle();
+    const first = http.expectOne('/api/products');
+    // Each demo request is tagged so the live traffic feed can be matched to this list.
+    expect(first.request.headers.get('X-RateGuard-Run')).toMatch(/^run-[0-9a-z]{8}$/);
+    expect(first.request.headers.get('X-RateGuard-Seq')).toBe('1');
+    first.flush({ ok: true });
+    await settle();
+
+    // The first response is listed while the run is still in flight.
+    expect(panel().querySelectorAll('details.response-entry')).toHaveLength(1);
+    expect(panel().textContent).toContain('receiving');
+
+    const second = http.expectOne('/api/products');
+    expect(second.request.headers.get('X-RateGuard-Seq')).toBe('2');
+    second.flush({ message: 'slow down' }, { status: 429, statusText: 'Too Many Requests' });
+    await run;
+    await settle();
+    expect(panel().querySelectorAll('details.response-entry')).toHaveLength(2);
+    expect(panel().textContent).not.toContain('receiving');
+  });
+
   it('keeps every response in one scrollable side panel with expand, collapse and a filter', async () => {
     await loadGroups([
       policyGroup({
