@@ -5,7 +5,11 @@ import { provideRouter } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { By } from '@angular/platform-browser';
+
 import { AdminApiService } from '../../core/admin-api.service';
+import { TrafficStore } from '../../core/traffic-store.service';
+import { RequestDemoComponent } from '../request-demo/request-demo.component';
 import { TrafficPageComponent } from './traffic-page.component';
 
 const BASE = '/api/admin/rate-limit';
@@ -60,9 +64,48 @@ describe('TrafficPageComponent', () => {
     await login;
     fixture = TestBed.createComponent(TrafficPageComponent);
     fixture.detectChanges();
+    // The first traffic answer is history from before the page opened; it must not reach the feed.
     answerAll();
     await fixture.whenStable();
     fixture.detectChanges();
+    expect(root().querySelectorAll('table.feed tbody tr')).toHaveLength(0);
+    // The next poll carries new decisions.
+    await nextPoll();
+  });
+
+  /** Runs one more poll and answers it with the sample events. */
+  const nextPoll = async () => {
+    const pending = TestBed.inject(TrafficStore).poll();
+    answerAll();
+    await pending;
+    await fixture.whenStable();
+    fixture.detectChanges();
+  };
+
+  const tester = () => fixture.debugElement.query(By.directive(RequestDemoComponent))
+    .componentInstance as RequestDemoComponent;
+
+  it('opens with an empty feed even when the server still holds older requests', async () => {
+    TestBed.inject(TrafficStore).stop();
+    TestBed.inject(TrafficStore).start();
+    answerAll();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(root().querySelectorAll('table.feed tbody tr')).toHaveLength(0);
+    expect(root().textContent).toContain('No requests since this view was opened or reset');
+  });
+
+  it('clears the feed when the tester switches target or starts a new run', async () => {
+    expect(root().querySelectorAll('table.feed tbody tr')).toHaveLength(2);
+    tester().targetChanged.emit();
+    fixture.detectChanges();
+    expect(root().querySelectorAll('table.feed tbody tr')).toHaveLength(0);
+
+    await nextPoll();
+    expect(root().querySelectorAll('table.feed tbody tr')).toHaveLength(2);
+    tester().runStarted.emit();
+    fixture.detectChanges();
+    expect(root().querySelectorAll('table.feed tbody tr')).toHaveLength(0);
   });
 
   it('puts the tester and the live view on one page', () => {
@@ -100,6 +143,6 @@ describe('TrafficPageComponent', () => {
     button('Clear').click();
     fixture.detectChanges();
     expect(root().querySelectorAll('table.feed tbody tr')).toHaveLength(0);
-    expect(root().textContent).toContain('No requests yet');
+    expect(root().textContent).toContain('No requests since this view was opened or reset');
   });
 });

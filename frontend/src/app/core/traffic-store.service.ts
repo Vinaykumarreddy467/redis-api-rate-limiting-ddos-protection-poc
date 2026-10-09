@@ -13,7 +13,9 @@ export const CHART_SECONDS = 60;
  * Polls the live traffic endpoint while the Traffic page is open.
  *
  * Events are fetched with a cursor (the largest id already seen), so each poll transfers only what is new.
- * Pausing freezes the feed but not the cursor, so resuming catches up on whatever the backend still holds.
+ * The first poll after {@link start} only positions the cursor: the feed shows what happens from now on,
+ * not requests from earlier sessions. Pausing freezes the feed but not the cursor, so resuming catches up on
+ * whatever the backend still holds.
  */
 @Injectable({ providedIn: 'root' })
 export class TrafficStore implements OnDestroy {
@@ -30,9 +32,13 @@ export class TrafficStore implements OnDestroy {
   private since = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
   private inFlight = false;
+  /** False until the cursor has been moved past everything recorded before the page opened. */
+  private primed = false;
 
   start(): void {
     if (this.timer) return;
+    this.primed = false;
+    this.events.set([]);
     this.live.set(true);
     void this.poll();
     this.timer = setInterval(() => void this.poll(), POLL_MS);
@@ -70,6 +76,12 @@ export class TrafficStore implements OnDestroy {
       this.enabled.set(result.enabled);
       this.dropped.set(result.dropped);
       this.buckets.set(result.buckets);
+      if (!this.primed) {
+        // Skip history: remember the newest id and show only what arrives after it.
+        this.since = Math.max(this.since, ...result.events.map((event) => event.id));
+        this.primed = true;
+        return;
+      }
       if (!this.paused() && result.events.length > 0) {
         this.since = Math.max(this.since, ...result.events.map((event) => event.id));
         this.events.update((current) => [...result.events, ...current].slice(0, MAX_FEED_EVENTS));

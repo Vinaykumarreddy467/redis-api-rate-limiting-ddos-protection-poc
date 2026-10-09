@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, output, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
 import {
@@ -28,6 +28,11 @@ export class RequestDemoComponent {
   private readonly store = inject(AdminStore);
 
   readonly maxCount = MAX_REQUEST_COUNT;
+
+  /** The user picked a different mode, group, endpoint or policy to test. */
+  readonly targetChanged = output<void>();
+  /** A run passed validation and is about to send its first request. */
+  readonly runStarted = output<void>();
 
   readonly targetId = signal<string | null>(null);
   readonly mode = signal<'groups' | 'legacy'>('groups');
@@ -235,21 +240,25 @@ export class RequestDemoComponent {
   onTargetChange(event: Event): void {
     this.targetId.set((event.target as HTMLSelectElement).value || null);
     this.formError.set(null);
+    this.targetChanged.emit();
   }
 
   onGroupChange(event: Event): void {
     this.groupId.set((event.target as HTMLSelectElement).value || null);
     this.endpointId.set(null);
+    this.targetChanged.emit();
   }
 
   onEndpointChange(event: Event): void {
     this.endpointId.set((event.target as HTMLSelectElement).value || null);
     this.formError.set(null);
+    this.targetChanged.emit();
   }
 
   onModeChange(event: Event): void {
     this.mode.set((event.target as HTMLSelectElement).value as 'groups' | 'legacy');
     this.formError.set(null);
+    this.targetChanged.emit();
   }
 
   onStart(): Promise<DemoSummary | null> {
@@ -278,6 +287,7 @@ export class RequestDemoComponent {
     }
 
     const total = clampRequestCount(this.requestCount());
+    this.runStarted.emit();
     this.progressTotal.set(total);
     this.progressSent.set(0);
 

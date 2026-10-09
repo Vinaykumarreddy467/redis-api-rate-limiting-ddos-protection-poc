@@ -59,6 +59,32 @@ describe('TrafficStore', () => {
     store = TestBed.inject(TrafficStore);
   });
 
+  it('skips history recorded before the view opened and shows only newer events', async () => {
+    await poll(response([event(42), event(41)]), 0);
+    expect(store.events()).toEqual([]);
+    // The chart still shows the recent seconds.
+    expect(store.buckets()).toHaveLength(1);
+
+    await poll(response([event(43)]), 42);
+    expect(store.events().map((e) => e.id)).toEqual([43]);
+  });
+
+  it('starts empty again every time the view is reopened', async () => {
+    await poll(response([]));
+    await poll(response([event(1)]));
+    expect(store.events()).toHaveLength(1);
+    store.start();
+    expect(store.events()).toEqual([]);
+    // start() polls once to re-prime; answer it so nothing is left pending.
+    http.expectOne((req) => req.url.startsWith(`${BASE}/traffic`)).flush(response([event(1)]));
+    store.stop();
+  });
+
+  describe('after priming', () => {
+    beforeEach(async () => {
+      await poll(response([]), 0);
+    });
+
   it('shows newest events first and asks only for newer ones next time', async () => {
     await poll(response([event(3), event(2)]), 0);
     expect(store.events().map((e) => e.id)).toEqual([3, 2]);
@@ -109,5 +135,6 @@ describe('TrafficStore', () => {
     expect(store.error()).toBeNull();
     expect(store.dropped()).toBe(7);
     expect(store.enabled()).toBe(false);
+  });
   });
 });

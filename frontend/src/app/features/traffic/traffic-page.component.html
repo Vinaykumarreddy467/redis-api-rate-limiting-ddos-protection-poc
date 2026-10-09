@@ -10,7 +10,8 @@
     </div>
   </div>
 
-  <app-request-demo />
+  <!-- A new target or a new run starts the feed afresh, so it never mixes in earlier results. -->
+  <app-request-demo (targetChanged)="traffic.clear()" (runStarted)="traffic.clear()" />
 
   <section class="live panel" aria-labelledby="live-heading">
     <div class="live-head">
@@ -62,7 +63,7 @@
     <p class="scale muted">Peak scale: {{ scale() }} requests per second</p>
 
     @if (traffic.events().length === 0) {
-      <p class="empty">No requests yet. Run a test above and the decisions appear here as they happen.</p>
+      <p class="empty">No requests since this view was opened or reset. Run a test above and the decisions appear here as they happen.</p>
     } @else {
       <div class="feed-wrap">
         <table class="feed">
